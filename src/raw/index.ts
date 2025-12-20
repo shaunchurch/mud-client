@@ -14,6 +14,11 @@ const CLEAR_LINE = `${CSI}2K`;
 const CLEAR_SCREEN = `${CSI}2J`;
 const CURSOR_HOME = `${CSI}H`;
 const CURSOR_TO_COL = (n: number) => `${CSI}${n}G`;
+const CURSOR_TO = (row: number, col: number) => `${CSI}${row};${col}H`;
+const SET_SCROLL_REGION = (top: number, bottom: number) => `${CSI}${top};${bottom}r`;
+const RESET_SCROLL_REGION = `${CSI}r`;
+const SAVE_CURSOR = `${CSI}s`;
+const RESTORE_CURSOR = `${CSI}u`;
 
 type AppState = "menu" | "client";
 
@@ -81,6 +86,8 @@ class MudClient {
 
   private async showConnectionMenu(): Promise<void> {
     this.appState = "menu";
+    // Reset scroll region when returning to menu
+    this.resetScrollRegion();
     const connections = this.charManager.listConnections();
 
     const items: MenuItem[] = [];
@@ -314,6 +321,9 @@ class MudClient {
 
     this.appState = "client";
 
+    // Set up scroll region: all but the last line
+    this.setupScrollRegion();
+
     // Clear screen and show connection info
     process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
     this.echo(`Character: ${this.currentCharacter.name}`);
@@ -325,6 +335,18 @@ class MudClient {
     // Connect
     this.client.connect(this.currentConnection.host, this.currentConnection.port);
     this.redrawInput();
+  }
+
+  private setupScrollRegion(): void {
+    const termHeight = process.stdout.rows || 24;
+    // Set scroll region to all but the last line
+    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 1));
+    // Move cursor to top of scroll region
+    process.stdout.write(CURSOR_HOME);
+  }
+
+  private resetScrollRegion(): void {
+    process.stdout.write(RESET_SCROLL_REGION);
   }
 
   private updatePrompt(): void {
@@ -352,25 +374,29 @@ class MudClient {
   private flushOutput(): void {
     if (!this.outputBuffer) return;
 
-    // Clear current input line
-    process.stdout.write(CLEAR_LINE + "\r");
+    const termHeight = process.stdout.rows || 24;
 
-    // Normalize line endings: convert \r\n to \n, then \r to \n
-    let output = this.outputBuffer
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n");
+    // Save cursor, move to scroll region, output, restore cursor
+    process.stdout.write(SAVE_CURSOR);
 
-    // Write the output
-    process.stdout.write(output);
+    // Move to bottom of scroll region (row termHeight-1)
+    // The scroll region will auto-scroll when we write
+    process.stdout.write(CURSOR_TO(termHeight - 1, 1));
+
+    // Write output - let terminal handle scrolling within the region
+    process.stdout.write(this.outputBuffer);
 
     // Ensure we end on a new line
-    if (!output.endsWith("\n")) {
-      process.stdout.write("\n");
+    if (!this.outputBuffer.endsWith("\n") && !this.outputBuffer.endsWith("\r")) {
+      process.stdout.write("\r\n");
     }
 
-    // Clear buffer and redraw input
+    // Clear buffer
     this.outputBuffer = "";
     this.outputTimer = null;
+
+    // Restore cursor and redraw input on the last line
+    process.stdout.write(RESTORE_CURSOR);
     this.redrawInput();
   }
 
@@ -853,12 +879,16 @@ class MudClient {
     if (this.appState !== "client") return;
 
     const termWidth = process.stdout.columns || 80;
+    const termHeight = process.stdout.rows || 24;
     const statusText = this.getStatusText();
     const statusCol = termWidth - statusText.length;
 
-    // Clear line and write prompt + input
+    // Move to last row and clear it
+    process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE);
+
+    // Write prompt + input
     const inputLine = this.promptText + this.input;
-    process.stdout.write(CLEAR_LINE + "\r" + inputLine);
+    process.stdout.write(inputLine);
 
     // Write right-aligned status in gray
     process.stdout.write(CURSOR_TO_COL(statusCol));
@@ -866,15 +896,19 @@ class MudClient {
 
     // Move cursor back to correct position in input
     const cursorCol = this.promptText.length + this.cursorPos + 1;
-    process.stdout.write(CURSOR_TO_COL(cursorCol));
+    process.stdout.write(CURSOR_TO(termHeight, cursorCol));
   }
 
   private echo(message: string): void {
     if (this.appState !== "client") return;
 
-    // Clear input line, print message, redraw input
-    process.stdout.write(CLEAR_LINE + "\r");
+    const termHeight = process.stdout.rows || 24;
+
+    // Save cursor, move to scroll region, print message
+    process.stdout.write(SAVE_CURSOR);
+    process.stdout.write(CURSOR_TO(termHeight - 1, 1));
     process.stdout.write("\x1b[36m[Client]\x1b[0m " + message + "\r\n");
+    process.stdout.write(RESTORE_CURSOR);
     this.redrawInput();
   }
 
@@ -895,6 +929,8 @@ class MudClient {
   }
 
   private cleanup(): void {
+    // Reset scroll region before exiting
+    this.resetScrollRegion();
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
