@@ -741,12 +741,17 @@ class MudClient {
     };
     const movement = movementMap[key];
     if (movement && this.connected) {
-      // Echo movement command like a typed command
+      // Echo movement command to scroll region
+      const termHeight = process.stdout.rows || 24;
+      process.stdout.write(SAVE_CURSOR);
+      process.stdout.write(CURSOR_TO(termHeight - 1, 1));
+      process.stdout.write(movement + "\r\n");
+      process.stdout.write(RESTORE_CURSOR);
+      // Send and update input
+      this.client.send(movement);
       this.input = movement;
       this.cursorPos = movement.length;
       this.inputSelected = true;
-      process.stdout.write("\r\n");
-      this.client.send(movement);
       this.redrawInput();
       return;
     }
