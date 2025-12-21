@@ -737,7 +737,7 @@ class MudClient {
       N: "se",
       "<": "u",
       ">": "d",
-      ".": "look",
+      ":": "look",
     };
     const movement = movementMap[key];
     if (movement && this.connected) {
@@ -948,7 +948,7 @@ class MudClient {
         this.echo("Movement (Shift+key, roguelike layout):");
         this.echo("  H/L/K/J - West/East/North/South");
         this.echo("  Y/U/B/N - NW/NE/SW/SE");
-        this.echo("  </> - Up/Down, . = look");
+        this.echo("  </> - Up/Down, ; = look");
       } else {
         this.echo(`Unknown command: ${command}`);
       }
