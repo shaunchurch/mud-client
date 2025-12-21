@@ -799,7 +799,14 @@ class MudClient {
 
   private handleCommand(cmd: string): void {
     const trimmed = cmd.trim();
-    if (!trimmed) return;
+
+    // Allow blank lines to be sent to MUD (but don't add to history)
+    if (!trimmed) {
+      if (this.connected) {
+        this.client.send("");
+      }
+      return;
+    }
 
     this.history.add(trimmed);
     this.history.reset();
