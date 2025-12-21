@@ -32,6 +32,7 @@ class MudClient {
 
   private input = "";
   private cursorPos = 0;
+  private inputSelected = false; // Entire input is selected (after sending command)
   private wordBuffer: Set<string> = new Set();
   private connected = false;
   private promptText = "> ";
@@ -562,18 +563,26 @@ class MudClient {
     if (key === "\x15") {
       this.input = "";
       this.cursorPos = 0;
+      this.inputSelected = false;
       this.redrawInput();
       return;
     }
 
     // Ctrl+W - delete word
     if (key === "\x17") {
-      const beforeCursor = this.input.slice(0, this.cursorPos);
-      const afterCursor = this.input.slice(this.cursorPos);
-      const trimmed = beforeCursor.trimEnd();
-      const lastSpace = trimmed.lastIndexOf(" ");
-      this.input = (lastSpace === -1 ? "" : trimmed.slice(0, lastSpace + 1)) + afterCursor;
-      this.cursorPos = lastSpace === -1 ? 0 : lastSpace + 1;
+      if (this.inputSelected) {
+        // Clear entire input when selected
+        this.input = "";
+        this.cursorPos = 0;
+        this.inputSelected = false;
+      } else {
+        const beforeCursor = this.input.slice(0, this.cursorPos);
+        const afterCursor = this.input.slice(this.cursorPos);
+        const trimmed = beforeCursor.trimEnd();
+        const lastSpace = trimmed.lastIndexOf(" ");
+        this.input = (lastSpace === -1 ? "" : trimmed.slice(0, lastSpace + 1)) + afterCursor;
+        this.cursorPos = lastSpace === -1 ? 0 : lastSpace + 1;
+      }
       this.redrawInput();
       return;
     }
@@ -582,15 +591,24 @@ class MudClient {
     if (key === "\r" || key === "\n") {
       process.stdout.write("\r\n");
       this.handleCommand(this.input);
-      this.input = "";
-      this.cursorPos = 0;
+      // Keep input and select it for easy resend/replace
+      if (this.input) {
+        this.inputSelected = true;
+        this.cursorPos = this.input.length;
+      }
       this.redrawInput();
       return;
     }
 
     // Backspace
     if (key === "\x7f" || key === "\b") {
-      if (this.cursorPos > 0) {
+      if (this.inputSelected) {
+        // Clear entire input when selected
+        this.input = "";
+        this.cursorPos = 0;
+        this.inputSelected = false;
+        this.redrawInput();
+      } else if (this.cursorPos > 0) {
         this.input = this.input.slice(0, this.cursorPos - 1) + this.input.slice(this.cursorPos);
         this.cursorPos--;
         this.redrawInput();
@@ -600,6 +618,7 @@ class MudClient {
 
     // Tab - completion
     if (key === "\t") {
+      this.inputSelected = false;
       const words = Array.from(this.wordBuffer);
       const completed = this.tabCompletion.complete(this.input, words);
       if (completed !== this.input) {
@@ -616,6 +635,7 @@ class MudClient {
 
       // Up arrow - history previous
       if (seq === "A") {
+        this.inputSelected = false;
         const prev = this.history.previous();
         if (prev !== null) {
           this.input = prev;
@@ -627,6 +647,7 @@ class MudClient {
 
       // Down arrow - history next
       if (seq === "B") {
+        this.inputSelected = false;
         const next = this.history.next();
         this.input = next || "";
         this.cursorPos = this.input.length;
@@ -636,7 +657,11 @@ class MudClient {
 
       // Left arrow
       if (seq === "D") {
-        if (this.cursorPos > 0) {
+        if (this.inputSelected) {
+          this.inputSelected = false;
+          this.cursorPos = 0; // Move to start when deselecting
+          this.redrawInput();
+        } else if (this.cursorPos > 0) {
           this.cursorPos--;
           this.redrawInput();
         }
@@ -645,7 +670,11 @@ class MudClient {
 
       // Right arrow
       if (seq === "C") {
-        if (this.cursorPos < this.input.length) {
+        if (this.inputSelected) {
+          this.inputSelected = false;
+          this.cursorPos = this.input.length; // Move to end when deselecting
+          this.redrawInput();
+        } else if (this.cursorPos < this.input.length) {
           this.cursorPos++;
           this.redrawInput();
         }
@@ -654,6 +683,7 @@ class MudClient {
 
       // Home
       if (seq === "H" || seq === "1~") {
+        this.inputSelected = false;
         this.cursorPos = 0;
         this.redrawInput();
         return;
@@ -661,6 +691,7 @@ class MudClient {
 
       // End
       if (seq === "F" || seq === "4~") {
+        this.inputSelected = false;
         this.cursorPos = this.input.length;
         this.redrawInput();
         return;
@@ -668,7 +699,13 @@ class MudClient {
 
       // Delete
       if (seq === "3~") {
-        if (this.cursorPos < this.input.length) {
+        if (this.inputSelected) {
+          // Clear entire input when selected
+          this.input = "";
+          this.cursorPos = 0;
+          this.inputSelected = false;
+          this.redrawInput();
+        } else if (this.cursorPos < this.input.length) {
           this.input = this.input.slice(0, this.cursorPos) + this.input.slice(this.cursorPos + 1);
           this.redrawInput();
         }
@@ -678,16 +715,44 @@ class MudClient {
       return;
     }
 
+    // Shift+vim-style movement keys (uppercase letters)
+    // H=west, J=south, K=east, U=north
+    // Y=nw, I=ne, N=sw, M=se
+    const movementMap: Record<string, string> = {
+      H: "w",
+      J: "s",
+      K: "e",
+      U: "n",
+      Y: "nw",
+      I: "ne",
+      N: "sw",
+      M: "se",
+    };
+    const movement = movementMap[key];
+    if (movement && this.connected) {
+      this.client.send(movement);
+      // Don't add to input - just send movement
+      return;
+    }
+
     // Regular printable character
     if (code >= 32 && code < 127) {
-      this.input = this.input.slice(0, this.cursorPos) + key + this.input.slice(this.cursorPos);
-      this.cursorPos++;
+      if (this.inputSelected) {
+        // Replace entire input when selected
+        this.input = key;
+        this.cursorPos = 1;
+        this.inputSelected = false;
+      } else {
+        this.input = this.input.slice(0, this.cursorPos) + key + this.input.slice(this.cursorPos);
+        this.cursorPos++;
+      }
       this.redrawInput();
     }
   }
 
   private enterReverseSearch(): void {
     this.inReverseSearch = true;
+    this.inputSelected = false;
     this.savedInput = this.input;
     this.searchQuery = "";
     this.searchResults = this.history.getAll().slice(-50).reverse();
@@ -858,6 +923,10 @@ class MudClient {
         this.echo("  Up/Down - Navigate history");
         this.echo("  Ctrl+L - Clear screen");
         this.echo("  Ctrl+C - Disconnect (or exit if disconnected)");
+        this.echo("");
+        this.echo("Movement (Shift+key):");
+        this.echo("  H/J/K/U - West/South/East/North");
+        this.echo("  Y/I/N/M - NW/NE/SW/SE");
       } else {
         this.echo(`Unknown command: ${command}`);
       }
@@ -886,9 +955,14 @@ class MudClient {
     // Move to last row and clear it
     process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE);
 
-    // Write prompt + input
-    const inputLine = this.promptText + this.input;
-    process.stdout.write(inputLine);
+    // Write prompt + input (with reverse video if selected)
+    process.stdout.write(this.promptText);
+    if (this.inputSelected && this.input) {
+      // Reverse video for selected text
+      process.stdout.write(`\x1b[7m${this.input}\x1b[27m`);
+    } else {
+      process.stdout.write(this.input);
+    }
 
     // Write right-aligned status in gray
     process.stdout.write(CURSOR_TO_COL(statusCol));
