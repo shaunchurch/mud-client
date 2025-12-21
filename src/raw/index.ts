@@ -594,7 +594,7 @@ class MudClient {
         const termHeight = process.stdout.rows || 24;
         process.stdout.write(SAVE_CURSOR);
         process.stdout.write(CURSOR_TO(termHeight - 1, 1));
-        process.stdout.write(this.input + "\r\n");
+        process.stdout.write("> " + this.input + "\r\n");
         process.stdout.write(RESTORE_CURSOR);
       }
       this.handleCommand(this.input);
@@ -745,7 +745,7 @@ class MudClient {
       const termHeight = process.stdout.rows || 24;
       process.stdout.write(SAVE_CURSOR);
       process.stdout.write(CURSOR_TO(termHeight - 1, 1));
-      process.stdout.write(movement + "\r\n");
+      process.stdout.write("> " + movement + "\r\n");
       process.stdout.write(RESTORE_CURSOR);
       // Send and update input
       this.client.send(movement);
