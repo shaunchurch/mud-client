@@ -589,7 +589,14 @@ class MudClient {
 
     // Enter
     if (key === "\r" || key === "\n") {
-      process.stdout.write("\r\n");
+      // Echo command to scroll region before sending
+      if (this.input.trim()) {
+        const termHeight = process.stdout.rows || 24;
+        process.stdout.write(SAVE_CURSOR);
+        process.stdout.write(CURSOR_TO(termHeight - 1, 1));
+        process.stdout.write(this.input + "\r\n");
+        process.stdout.write(RESTORE_CURSOR);
+      }
       this.handleCommand(this.input);
       // Keep input and select it for easy resend/replace
       if (this.input) {
