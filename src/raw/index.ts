@@ -6,6 +6,7 @@ import type { ConnectionConfig } from "../character/Connection";
 import type { CharacterConfig } from "../character/Character";
 import { Menu, type MenuItem } from "./Menu";
 import { TextPrompt } from "./TextPrompt";
+import { SettingsManager } from "../settings/Settings";
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -27,6 +28,7 @@ class MudClient {
   private history: CommandHistory;
   private tabCompletion: TabCompletion;
   private charManager: CharacterManager;
+  private settings: SettingsManager;
   private menu: Menu;
   private prompt: TextPrompt;
 
@@ -66,6 +68,7 @@ class MudClient {
     this.history = new CommandHistory();
     this.tabCompletion = new TabCompletion();
     this.charManager = new CharacterManager(this.history);
+    this.settings = new SettingsManager();
     this.menu = new Menu();
     this.prompt = new TextPrompt();
 
@@ -352,8 +355,12 @@ class MudClient {
   }
 
   private updatePrompt(): void {
-    // Simple prompt - status shown on right side
-    this.promptText = "> ";
+    if (this.settings.get("statusPosition") === "prompt") {
+      const status = this.getStatusText();
+      this.promptText = status ? `${status} > ` : "> ";
+    } else {
+      this.promptText = "> ";
+    }
   }
 
   private getStatusText(): string {
@@ -370,7 +377,7 @@ class MudClient {
   private showDisconnectPrompt(): void {
     this.waitingForDisconnectAck = true;
     process.stdout.write("\r\n");
-    process.stdout.write("\x1b[33m(disconnected) Press Enter to continue...\x1b[0m");
+    process.stdout.write("\x1b[33m(disconnected) Press Enter to continue or Esc to exit...\x1b[0m");
   }
 
   private flushOutput(): void {
@@ -385,9 +392,21 @@ class MudClient {
     }
 
     // Split into complete lines and partial remainder
-    const toFlush = this.outputBuffer.slice(0, lastNewline + 1);
+    let toFlush = this.outputBuffer.slice(0, lastNewline + 1);
     this.outputBuffer = this.outputBuffer.slice(lastNewline + 1);
     this.outputTimer = null;
+
+    // Add timestamps if enabled
+    const timestampMode = this.settings.get("timestamps");
+    if (timestampMode !== "hidden") {
+      toFlush = this.addTimestamps(toFlush, timestampMode);
+    }
+
+    // Word wrap if enabled
+    if (this.settings.get("wordWrap")) {
+      const termWidth = process.stdout.columns || 80;
+      toFlush = this.wrapMudOutput(toFlush, termWidth);
+    }
 
     const termHeight = process.stdout.rows || 24;
 
@@ -415,6 +434,116 @@ class MudClient {
     // Restore cursor and redraw input on the last line
     process.stdout.write(RESTORE_CURSOR);
     this.redrawInput();
+  }
+
+  private addTimestamps(text: string, mode: "time" | "datetime"): string {
+    const now = new Date();
+    let timestamp: string;
+    if (mode === "time") {
+      timestamp = now.toLocaleTimeString("en-US", { hour12: false });
+    } else {
+      timestamp = now.toLocaleString("en-US", {
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    }
+    const prefix = `\x1b[90m[${timestamp}]\x1b[0m `;
+
+    // Split by newline, prepend timestamp to non-empty lines
+    const lines = text.split("\n");
+    return lines
+      .map((line, i) => {
+        // Don't add timestamp to the last empty element after final newline
+        if (i === lines.length - 1 && line === "") return line;
+        // Don't add timestamp to blank lines
+        const stripped = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+        if (!stripped) return line;
+        return prefix + line;
+      })
+      .join("\n");
+  }
+
+  private wrapMudOutput(text: string, maxWidth: number): string {
+    const lines = text.split("\n");
+    const wrappedLines: string[] = [];
+
+    for (const line of lines) {
+      // Calculate visible length (excluding ANSI codes)
+      const visibleLen = line.replace(/\x1b\[[0-9;]*m/g, "").length;
+
+      if (visibleLen <= maxWidth) {
+        wrappedLines.push(line);
+        continue;
+      }
+
+      // Parse line into segments (text and ANSI codes)
+      const segments: { text: string; ansi: string }[] = [];
+      let currentAnsi = "";
+      let remaining = line;
+
+      while (remaining.length > 0) {
+        const ansiMatch = remaining.match(/^\x1b\[[0-9;]*m/);
+        if (ansiMatch) {
+          currentAnsi = ansiMatch[0];
+          remaining = remaining.slice(ansiMatch[0].length);
+          continue;
+        }
+
+        // Find next space or ANSI code
+        const nextSpace = remaining.indexOf(" ");
+        const nextAnsi = remaining.search(/\x1b\[/);
+
+        let wordEnd: number;
+        if (nextSpace === -1 && nextAnsi === -1) {
+          wordEnd = remaining.length;
+        } else if (nextSpace === -1) {
+          wordEnd = nextAnsi;
+        } else if (nextAnsi === -1) {
+          wordEnd = nextSpace + 1; // Include the space
+        } else {
+          wordEnd = Math.min(nextSpace + 1, nextAnsi);
+        }
+
+        segments.push({ text: remaining.slice(0, wordEnd), ansi: currentAnsi });
+        remaining = remaining.slice(wordEnd);
+      }
+
+      // Build wrapped lines from segments
+      let currentLine = "";
+      let currentVisibleLen = 0;
+      let lastAnsi = "";
+
+      for (const seg of segments) {
+        const segVisibleLen = seg.text.length;
+
+        // If this segment would overflow, wrap first
+        if (currentVisibleLen + segVisibleLen > maxWidth && currentVisibleLen > 0) {
+          wrappedLines.push(currentLine);
+          currentLine = lastAnsi; // Restore color state
+          currentVisibleLen = 0;
+        }
+
+        // Add ANSI code if different from current
+        if (seg.ansi && seg.ansi !== lastAnsi) {
+          currentLine += seg.ansi;
+          lastAnsi = seg.ansi;
+        }
+
+        currentLine += seg.text;
+        currentVisibleLen += segVisibleLen;
+      }
+
+      if (currentLine.length > 0) {
+        wrappedLines.push(currentLine);
+      }
+    }
+
+    return wrappedLines.join("\n");
   }
 
   private setupTelnet(): void {
@@ -475,7 +604,18 @@ class MudClient {
         }
 
         this.echo("Disconnected.");
-        this.showDisconnectPrompt();
+
+        // Auto-reconnect if enabled and we have a connection to reconnect to
+        if (this.settings.get("autoReconnect") && this.currentConnection) {
+          this.echo("Reconnecting in 3 seconds...");
+          setTimeout(() => {
+            if (this.currentConnection && !this.connected) {
+              this.client.connect(this.currentConnection.host, this.currentConnection.port);
+            }
+          }, 3000);
+        } else {
+          this.showDisconnectPrompt();
+        }
       }
     });
 
@@ -528,6 +668,11 @@ class MudClient {
       if (key === "\r" || key === "\n" || key === " ") {
         this.waitingForDisconnectAck = false;
         this.showConnectionMenu();
+      } else if (key === "\x1b") {
+        // Escape - clear screen and exit
+        process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+        this.cleanup();
+        process.exit(0);
       }
       return;
     }
@@ -605,8 +750,12 @@ class MudClient {
       }
       this.handleCommand(this.input);
       if (this.input) {
-        this.inputSelected = true;
-        this.cursorPos = this.input.length;
+        if (this.settings.get("inputMode") === "clear") {
+          this.clearInput();
+        } else {
+          this.inputSelected = true;
+          this.cursorPos = this.input.length;
+        }
       }
       this.redrawInput();
       return;
@@ -628,13 +777,43 @@ class MudClient {
     // Tab - completion
     if (key === "\t") {
       this.inputSelected = false;
-      const words = Array.from(this.wordBuffer);
-      const completed = this.tabCompletion.complete(this.input, words);
-      if (completed !== this.input) {
+
+      // Special case: "/set [key]" - cycle through setting keys
+      const setKeysMatch = this.input.match(/^\/set\s+(\S*)$/);
+      if (setKeysMatch) {
+        const keys = this.settings.getKeys();
+        const currentKey = setKeysMatch[1] || "";
+        const completed = this.tabCompletion.cycle("/set ", keys, currentKey, this.input);
         this.input = completed;
         this.cursorPos = this.input.length;
         this.redrawInput();
+        return;
       }
+
+      // Special case: "/set <key> [value]" - cycle through valid values
+      const setValueMatch = this.input.match(/^\/set\s+(\S+)\s+(\S*)$/);
+      if (setValueMatch && this.settings.isValidKey(setValueMatch[1])) {
+        const settingKey = setValueMatch[1] as keyof import("../settings/Settings").AppSettings;
+        const values = [...this.settings.getValidValues(settingKey)];
+        const currentValue = setValueMatch[2] || "";
+        const completed = this.tabCompletion.cycle(
+          `/set ${setValueMatch[1]} `,
+          values,
+          currentValue,
+          this.input
+        );
+        this.input = completed;
+        this.cursorPos = this.input.length;
+        this.redrawInput();
+        return;
+      }
+
+      // Default word completion
+      const words = this.getCompletionWords();
+      const completed = this.tabCompletion.complete(this.input, words);
+      this.input = completed;
+      this.cursorPos = this.input.length;
+      this.redrawInput();
       return;
     }
 
@@ -725,23 +904,25 @@ class MudClient {
     // H=west, L=east, K=north, J=south
     // Y=nw, U=ne, B=sw, N=se
     // < >= up/down, . = look
-    const movementMap: Record<string, string> = {
-      H: "w",
-      L: "e",
-      K: "n",
-      J: "s",
-      Y: "nw",
-      U: "ne",
-      B: "sw",
-      N: "se",
-      "<": "u",
-      ">": "d",
-      ":": "look",
-    };
-    const movement = movementMap[key];
-    if (movement && this.connected) {
-      this.sendAndEcho(movement);
-      return;
+    if (this.settings.get("movementKeys")) {
+      const movementMap: Record<string, string> = {
+        H: "w",
+        L: "e",
+        K: "n",
+        J: "s",
+        Y: "nw",
+        U: "ne",
+        B: "sw",
+        N: "se",
+        "<": "u",
+        ">": "d",
+        ":": "look",
+      };
+      const movement = movementMap[key];
+      if (movement && this.connected) {
+        this.sendAndEcho(movement);
+        return;
+      }
     }
 
     // Regular printable character
@@ -930,6 +1111,8 @@ class MudClient {
         this.echo("  /alias <name> <expansion> - Create alias");
         this.echo("  /unalias <name> - Remove alias");
         this.echo("  /aliases - List all aliases");
+        this.echo("  /config - Show all settings");
+        this.echo("  /set <key> <value> - Change a setting");
         this.echo("  /clear - Clear screen");
         this.echo("  /exit - Exit client");
         this.echo("");
@@ -944,6 +1127,42 @@ class MudClient {
         this.echo("  H/L/K/J - West/East/North/South");
         this.echo("  Y/U/B/N - NW/NE/SW/SE");
         this.echo("  </> - Up/Down, ; = look");
+      } else if (command === "config") {
+        this.echo("Settings:");
+        const settings = this.settings.getAll();
+        for (const [key, value] of Object.entries(settings)) {
+          const settingKey = key as keyof typeof settings;
+          const description = this.settings.getDescription(settingKey);
+          const validValues = this.settings.getValidValues(settingKey);
+          this.echo(`  ${key} = ${value}`);
+          this.echo(`    ${description}`);
+          this.echo(`    Values: ${validValues.join(", ")}`);
+        }
+      } else if (command === "set") {
+        const key = parts[1];
+        const value = parts[2];
+        if (!key) {
+          this.echo(`Usage: /set <key> [value]`);
+          this.echo(`Use /config to see available settings.`);
+        } else if (!this.settings.isValidKey(key)) {
+          this.echo(`Unknown setting: ${key}`);
+          this.echo(`Use /config to see available settings.`);
+        } else if (!value) {
+          const currentValue = this.settings.get(key);
+          const validValues = this.settings.getValidValues(key);
+          const description = this.settings.getDescription(key);
+          this.echo(`${key} = ${currentValue}`);
+          this.echo(`  ${description}`);
+          this.echo(`  Values: ${validValues.join(", ")}`);
+        } else if (this.settings.set(key as keyof import("../settings/Settings").AppSettings, value)) {
+          this.echo(`Setting updated: ${key} = ${value}`);
+          this.updatePrompt();
+          this.redrawInput();
+        } else {
+          const validValues = this.settings.getValidValues(key);
+          this.echo(`Invalid value: ${value}`);
+          this.echo(`Valid values: ${validValues.join(", ")}`);
+        }
       } else {
         this.echo(`Unknown command: ${command}`);
       }
@@ -963,6 +1182,7 @@ class MudClient {
 
   // Helper: echo command to scroll region with > prefix
   private echoCommand(cmd: string): void {
+    if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
     process.stdout.write(SAVE_CURSOR);
     process.stdout.write(CURSOR_TO(termHeight - 1, 1));
@@ -981,9 +1201,13 @@ class MudClient {
   private sendAndEcho(cmd: string): void {
     this.echoCommand(cmd);
     this.client.send(cmd);
-    this.input = cmd;
-    this.cursorPos = cmd.length;
-    this.inputSelected = true;
+    if (this.settings.get("inputMode") === "clear") {
+      this.clearInput();
+    } else {
+      this.input = cmd;
+      this.cursorPos = cmd.length;
+      this.inputSelected = true;
+    }
     this.redrawInput();
   }
 
@@ -992,8 +1216,6 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
-    const statusText = this.getStatusText();
-    const statusCol = termWidth - statusText.length;
 
     // Move to last row and clear it
     process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE);
@@ -1007,9 +1229,13 @@ class MudClient {
       process.stdout.write(this.input);
     }
 
-    // Write right-aligned status in gray
-    process.stdout.write(CURSOR_TO_COL(statusCol));
-    process.stdout.write(`\x1b[90m${statusText}\x1b[0m`);
+    // Write right-aligned status in gray (only if statusPosition is 'right')
+    if (this.settings.get("statusPosition") === "right") {
+      const statusText = this.getStatusText();
+      const statusCol = termWidth - statusText.length;
+      process.stdout.write(CURSOR_TO_COL(statusCol));
+      process.stdout.write(`\x1b[90m${statusText}\x1b[0m`);
+    }
 
     // Move cursor back to correct position in input
     const cursorCol = this.promptText.length + this.cursorPos + 1;
@@ -1019,14 +1245,64 @@ class MudClient {
   private echo(message: string): void {
     if (this.appState !== "client") return;
 
+    const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
+    const prefix = "\x1b[36m[Client]\x1b[0m ";
+    const prefixLen = 10; // "[Client] " visible length
+    const availableWidth = termWidth - prefixLen;
 
-    // Save cursor, move to scroll region, print message
+    // Word wrap the message
+    const lines = this.wordWrap(message, availableWidth);
+
+    // Save cursor, move to scroll region
     process.stdout.write(SAVE_CURSOR);
     process.stdout.write(CURSOR_TO(termHeight - 1, 1));
-    process.stdout.write("\x1b[36m[Client]\x1b[0m " + message + "\r\n");
+
+    // Print first line with prefix, continuation lines with indent
+    for (let i = 0; i < lines.length; i++) {
+      if (i === 0) {
+        process.stdout.write(prefix + lines[i] + "\r\n");
+      } else {
+        process.stdout.write(" ".repeat(prefixLen) + lines[i] + "\r\n");
+      }
+    }
+
     process.stdout.write(RESTORE_CURSOR);
     this.redrawInput();
+  }
+
+  private wordWrap(text: string, maxWidth: number): string[] {
+    // Preserve leading indentation
+    const leadingSpaces = text.match(/^(\s*)/)?.[1] || "";
+    const indent = leadingSpaces.length;
+    const content = text.slice(indent);
+
+    if (text.length <= maxWidth) {
+      return [text];
+    }
+
+    const lines: string[] = [];
+    const words = content.split(" ");
+    let currentLine = leadingSpaces;
+    const continuationIndent = " ".repeat(indent);
+
+    for (const word of words) {
+      if (currentLine.length === indent) {
+        // First word on line
+        currentLine += word;
+      } else if (currentLine.length + 1 + word.length <= maxWidth) {
+        currentLine += " " + word;
+      } else {
+        lines.push(currentLine);
+        currentLine = continuationIndent + word;
+      }
+    }
+
+    if (currentLine.length > 0) {
+      lines.push(currentLine);
+    }
+
+    return lines.length > 0 ? lines : [text];
   }
 
   private extractWords(text: string): void {
@@ -1043,6 +1319,46 @@ class MudClient {
         }
       }
     }
+  }
+
+  private getCompletionWords(): string[] {
+    const input = this.input.trimStart();
+
+    // Command completion (e.g., /s -> /set, /con -> /connect)
+    if (input.startsWith("/") && !input.includes(" ")) {
+      return [
+        "/connect",
+        "/disconnect",
+        "/reconnect",
+        "/menu",
+        "/alias",
+        "/unalias",
+        "/aliases",
+        "/config",
+        "/set",
+        "/clear",
+        "/exit",
+        "/help",
+      ];
+    }
+
+    // /set command completion
+    if (input.startsWith("/set ")) {
+      const afterSet = input.slice(5);
+      const parts = afterSet.split(/\s+/).filter(Boolean);
+      const endsWithSpace = afterSet.endsWith(" ") || afterSet === "";
+
+      if (parts.length === 0 || (parts.length === 1 && !endsWithSpace)) {
+        // Completing setting key (e.g., "/set " or "/set stat")
+        return this.settings.getKeys();
+      } else if (parts.length >= 1 && this.settings.isValidKey(parts[0])) {
+        // Completing setting value (e.g., "/set statusPosition " or "/set statusPosition pro")
+        return [...this.settings.getValidValues(parts[0])];
+      }
+    }
+
+    // Default: use word buffer
+    return Array.from(this.wordBuffer);
   }
 
   private cleanup(): void {
