@@ -32,6 +32,17 @@ export class TelnetClient extends EventEmitter {
   private port = 23;
   private state: TelnetState = "disconnected";
   private buffer = Buffer.alloc(0);
+  private debug = false;
+
+  setDebug(enabled: boolean): void {
+    this.debug = enabled;
+  }
+
+  private normalizeLineEndings(text: string): string {
+    // Only normalize complete CRLF -> LF
+    // Don't touch bare CR (may be split CRLF or intentional overwrite)
+    return text.replace(/\r\n/g, "\n");
+  }
 
   getState(): TelnetState {
     return this.state;
@@ -107,6 +118,13 @@ export class TelnetClient extends EventEmitter {
   }
 
   private handleData(data: Buffer): void {
+    // Debug logging - output raw bytes to stderr
+    if (this.debug) {
+      const hex = data.toString("hex");
+      const readable = data.toString("utf8").replace(/[\x00-\x1f]/g, ".");
+      process.stderr.write(`[TELNET RAW] ${hex} | ${readable}\n`);
+    }
+
     // Concatenate with existing buffer
     this.buffer = Buffer.concat([this.buffer, data]);
 
@@ -117,7 +135,9 @@ export class TelnetClient extends EventEmitter {
       if (this.buffer[i] === IAC && i + 1 < this.buffer.length) {
         // Emit any text before this telnet command
         if (i > textStart) {
-          const text = this.buffer.slice(textStart, i).toString("utf8");
+          const text = this.normalizeLineEndings(
+            this.buffer.slice(textStart, i).toString("utf8")
+          );
           if (text) {
             this.emit("data", text);
           }
@@ -169,7 +189,9 @@ export class TelnetClient extends EventEmitter {
 
     // Emit remaining text
     if (textStart < this.buffer.length) {
-      const text = this.buffer.slice(textStart).toString("utf8");
+      const text = this.normalizeLineEndings(
+        this.buffer.slice(textStart).toString("utf8")
+      );
       if (text) {
         this.emit("data", text);
       }
