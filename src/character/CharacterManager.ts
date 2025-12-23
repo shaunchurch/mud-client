@@ -178,10 +178,16 @@ export class CharacterManager extends EventEmitter {
     }
 
     // Replace $* with all remaining arguments
+    const hadPlaceholders = /\$\d+|\$\*/.test(expansion);
     result = result.replace(/\$\*/g, args.join(" "));
 
     // Remove unused placeholders
     result = result.replace(/\$\d+/g, "");
+
+    // If no placeholders were in the original expansion, append all arguments
+    if (!hadPlaceholders && args.length > 0) {
+      result = result + " " + args.join(" ");
+    }
 
     return result.trim();
   }
