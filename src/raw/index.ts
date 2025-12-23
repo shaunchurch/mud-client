@@ -775,6 +775,29 @@ class MudClient {
       return;
     }
 
+    // Ctrl+A - start of line
+    if (key === "\x01") {
+      this.cursorPos = 0;
+      this.inputSelected = false;
+      this.redrawInput();
+      return;
+    }
+
+    // Ctrl+E - end of line
+    if (key === "\x05") {
+      this.cursorPos = this.input.length;
+      this.inputSelected = false;
+      this.redrawInput();
+      return;
+    }
+
+    // Ctrl+K - kill to end of line
+    if (key === "\x0b") {
+      this.input = this.input.slice(0, this.cursorPos);
+      this.redrawInput();
+      return;
+    }
+
     // Ctrl+U - clear line
     if (key === "\x15") {
       this.clearInput();
