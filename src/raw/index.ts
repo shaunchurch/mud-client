@@ -409,10 +409,9 @@ class MudClient {
       return;
     }
 
-    // Split into complete lines and discard partial remainder (server prompt)
-    // We have our own input bar so we don't need the server's prompt
+    // Split into complete lines, keep partial remainder for next flush
     let toFlush = this.outputBuffer.slice(0, lastNewline + 1);
-    this.outputBuffer = ""; // Discard any partial line (server prompt)
+    this.outputBuffer = this.outputBuffer.slice(lastNewline + 1);
     this.outputTimer = null;
 
     // Debug: log raw buffer content before processing
@@ -1258,10 +1257,13 @@ class MudClient {
   private echoCommand(cmd: string): void {
     if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
+    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 2));
     process.stdout.write(SAVE_CURSOR);
-    process.stdout.write(CURSOR_TO(termHeight - 1, 1));
-    process.stdout.write("> " + cmd + "\r\n");
+    process.stdout.write(CURSOR_TO(termHeight - 2, 1));
+    process.stdout.write("\n"); // Scroll first
+    process.stdout.write("\x1b[90m> " + cmd + "\x1b[0m"); // Dark grey
     process.stdout.write(RESTORE_CURSOR);
+    this.redrawInput();
   }
 
   // Helper: clear input and deselect
