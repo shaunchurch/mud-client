@@ -6,7 +6,9 @@
     "start": "bun run src/raw/index.ts",
     "dev": "bun --watch run src/raw/index.ts",
     "test": "bun test",
-    "test:watch": "bun test --watch"
+    "test:watch": "bun test --watch",
+    "build": "bun build --compile --outfile=mud-client src/raw/index.ts",
+    "release": "gh release create --generate-notes"
   },
   "dependencies": {},
   "devDependencies": {

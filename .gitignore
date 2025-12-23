@@ -3,6 +3,11 @@ node_modules/
 
 # Bun
 bun.lock
+*.bun-build
+
+# Build output
+mud-client
+mud-client-*
 
 # Claude
 .claude/
