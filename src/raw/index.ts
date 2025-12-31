@@ -1,4 +1,6 @@
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { TelnetClient } from "../connection/TelnetClient";
 import { CommandHistory } from "../input/CommandHistory";
 import { TabCompletion } from "../input/TabCompletion";
@@ -1220,7 +1222,7 @@ class MudClient {
       } else if (command === "debug") {
         this.debugMode = !this.debugMode;
         if (this.debugMode) {
-          const logPath = "/tmp/mud-client-debug.log";
+          const logPath = path.join(os.tmpdir(), "mud-client-debug.log");
           this.debugLogStream = fs.createWriteStream(logPath, { flags: "a" });
           this.debugLogStream.write(`\n=== Debug session started: ${new Date().toISOString()} ===\n`);
           this.client.setDebug(true, this.debugLogStream);
