@@ -8,6 +8,7 @@ import type { CharacterConfig } from "../character/Character";
 import { Menu, type MenuItem } from "./Menu";
 import { TextPrompt } from "./TextPrompt";
 import { SettingsManager } from "../settings/Settings";
+import { ChatPane } from "./ChatPane";
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -32,6 +33,8 @@ class MudClient {
   private settings: SettingsManager;
   private menu: Menu;
   private prompt: TextPrompt;
+  private chatPane: ChatPane;
+  private commPanelHeight = 5;
 
   private input = "";
   private cursorPos = 0;
@@ -45,6 +48,10 @@ class MudClient {
   private outputBuffer = "";
   private outputTimer: ReturnType<typeof setTimeout> | null = null;
   private lastColorState = ""; // Track last SGR sequence for color continuity
+
+  // Main output history for resize redraw
+  private outputHistory: string[] = [];
+  private maxOutputHistory = 500; // Keep last N lines
 
   // Waiting for user to acknowledge disconnect
   private waitingForDisconnectAck = false;
@@ -76,6 +83,7 @@ class MudClient {
     this.settings = new SettingsManager();
     this.menu = new Menu();
     this.prompt = new TextPrompt();
+    this.chatPane = new ChatPane(this.commPanelHeight);
 
     this.setupTelnet();
     this.setupInput();
@@ -85,8 +93,29 @@ class MudClient {
   private setupResizeHandler(): void {
     process.stdout.on("resize", () => {
       if (this.appState === "client") {
-        // Re-establish scroll region with new terminal size
+        const termHeight = process.stdout.rows || 24;
+        const mainScrollTop = this.commPanelHeight + 2;
+        const mainScrollBottom = termHeight - 2;
+        const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+        // Clear entire screen and reset
+        process.stdout.write(RESET_SCROLL_REGION);
+        process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+
+        // Re-establish scroll region
         this.setupScrollRegion();
+
+        // Redraw main output from history (last N lines that fit)
+        const linesToShow = this.outputHistory.slice(-scrollHeight);
+        if (linesToShow.length > 0) {
+          process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+          for (const line of linesToShow) {
+            process.stdout.write(line + "\n");
+          }
+        }
+
+        // Redraw fixed elements
+        this.chatPane.setPosition(1, this.commPanelHeight);
         this.redrawInput();
       }
     });
@@ -361,11 +390,21 @@ class MudClient {
 
   private setupScrollRegion(): void {
     const termHeight = process.stdout.rows || 24;
-    // Set scroll region to all but the last 2 lines (divider + input)
-    // Divider at termHeight-1 is outside scroll region and won't scroll
-    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 2));
+    // Layout (comm panel at top):
+    //   Row 1 to commPanelHeight: comm panel
+    //   Row commPanelHeight+1: divider below comm panel
+    //   Row commPanelHeight+2 to termHeight-2: main output (scroll region)
+    //   Row termHeight-1: divider above input
+    //   Row termHeight: input line
+    const mainScrollTop = this.commPanelHeight + 2;
+    const mainScrollBottom = termHeight - 2;
+
+    // Set scroll region for main output (below comm panel)
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     // Move cursor to top of scroll region
-    process.stdout.write(CURSOR_HOME);
+    process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+    // Set chat pane position (top of terminal)
+    this.chatPane.setPosition(1, this.commPanelHeight);
   }
 
   private resetScrollRegion(): void {
@@ -436,15 +475,17 @@ class MudClient {
     }
 
     const termHeight = process.stdout.rows || 24;
+    const mainScrollTop = this.commPanelHeight + 2;
+    const mainScrollBottom = termHeight - 2;
 
     // Ensure scroll region is correct (defensive - prevents drift)
-    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 2));
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
 
     // Save cursor, move to scroll region, output, restore cursor
     process.stdout.write(SAVE_CURSOR);
 
-    // Move to bottom of scroll region (row termHeight-2)
-    process.stdout.write(CURSOR_TO(termHeight - 2, 1));
+    // Move to bottom of scroll region
+    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
 
     // Scroll first by writing a newline, so new content appears below existing
     process.stdout.write("\n");
@@ -475,6 +516,14 @@ class MudClient {
     if (this.debugMode && this.debugLogStream) {
       this.debugLogStream.write(`[FLUSH OUT] len=${toFlush.length}\n`);
       this.debugLogStream.write(`---\n`);
+    }
+
+    // Store lines in history for resize redraw
+    const lines = toFlush.split("\n").filter(line => line.length > 0);
+    this.outputHistory.push(...lines);
+    // Trim to max history
+    if (this.outputHistory.length > this.maxOutputHistory) {
+      this.outputHistory = this.outputHistory.slice(-this.maxOutputHistory);
     }
 
     // Write output - let terminal handle scrolling within the region
@@ -1206,6 +1255,8 @@ class MudClient {
         this.echo("  H/L/K/J - West/East/North/South");
         this.echo("  Y/U/B/N - NW/NE/SW/SE");
         this.echo("  </> - Up/Down, ; = look");
+        // Test comm panel (temporary)
+        this.chatPane.addMessage("\x1b[33m[Test]\x1b[0m Comm panel test message");
       } else if (command === "config") {
         this.echo("Settings:");
         const settings = this.settings.getAll();
@@ -1280,9 +1331,11 @@ class MudClient {
   private echoCommand(cmd: string): void {
     if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
-    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 2));
+    const mainScrollTop = this.commPanelHeight + 2;
+    const mainScrollBottom = termHeight - 2;
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
-    process.stdout.write(CURSOR_TO(termHeight - 2, 1));
+    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
     process.stdout.write("\n"); // Scroll first
     process.stdout.write("\x1b[90m> " + cmd + "\x1b[0m"); // Dark grey
     process.stdout.write(RESTORE_CURSOR);
@@ -1316,8 +1369,21 @@ class MudClient {
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
 
-    // Draw thin dark grey divider line on line termHeight-1
-    process.stdout.write(CURSOR_TO(termHeight - 1, 1));
+    // Layout rows (comm panel at top)
+    const commPanelTopRow = 1;
+    const upperDividerRow = this.commPanelHeight + 1;  // Below comm panel
+    const lowerDividerRow = termHeight - 1;            // Above input
+
+    // Render chat pane at top
+    this.chatPane.setPosition(commPanelTopRow, this.commPanelHeight);
+    this.chatPane.render();
+
+    // Draw upper divider (between comm panel and main output)
+    process.stdout.write(CURSOR_TO(upperDividerRow, 1));
+    process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
+
+    // Draw lower divider (between main output and input)
+    process.stdout.write(CURSOR_TO(lowerDividerRow, 1));
     process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
 
     // Move to last row and clear it
@@ -1350,6 +1416,8 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
+    const mainScrollTop = this.commPanelHeight + 2;
+    const mainScrollBottom = termHeight - 2;
     const prefix = "\x1b[36m[Client]\x1b[0m ";
     const prefixLen = 10; // "[Client] " visible length
     const availableWidth = termWidth - prefixLen;
@@ -1358,9 +1426,9 @@ class MudClient {
     const lines = this.wordWrap(message, availableWidth);
 
     // Ensure scroll region is set, save cursor, move to scroll region bottom
-    process.stdout.write(SET_SCROLL_REGION(1, termHeight - 2));
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
-    process.stdout.write(CURSOR_TO(termHeight - 2, 1));
+    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
 
     // Print first line with prefix, continuation lines with indent
     for (let i = 0; i < lines.length; i++) {
