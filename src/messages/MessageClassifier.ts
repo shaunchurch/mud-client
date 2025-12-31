@@ -5,7 +5,7 @@
  * Patterns configurable for future user customization.
  */
 
-export type MessageType = "tell" | "channel" | "other";
+export type MessageType = "tell" | "channel" | "say" | "other";
 
 export interface ClassifiedMessage {
   type: MessageType;
@@ -40,6 +40,14 @@ export class MessageClassifier {
     { pattern: /^You reply to (\w+): .+$/, isOutgoing: true, senderGroup: 1 },
   ];
 
+  // Say patterns - same structure as tells
+  private sayPatterns: TellPattern[] = [
+    // "Xal says : hello there" (space before colon like tells)
+    { pattern: /^(\w+) says ?: .+$/, isOutgoing: false, senderGroup: 1 },
+    // "You say: hello"
+    { pattern: /^You say ?: .+$/, isOutgoing: true, senderGroup: 0 },
+  ];
+
   // Channel patterns
   private channelPattern: ChannelPattern = {
     // Matches [chaos], [*mortal*], etc.
@@ -71,6 +79,19 @@ export class MessageClassifier {
           raw: line,
           sender: match[tellPattern.senderGroup],
           isOutgoing: tellPattern.isOutgoing,
+        };
+      }
+    }
+
+    // Check for says
+    for (const sayPattern of this.sayPatterns) {
+      const match = line.match(sayPattern.pattern);
+      if (match) {
+        return {
+          type: "say",
+          raw: line,
+          sender: sayPattern.senderGroup > 0 ? match[sayPattern.senderGroup] : undefined,
+          isOutgoing: sayPattern.isOutgoing,
         };
       }
     }

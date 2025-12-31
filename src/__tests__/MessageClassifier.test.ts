@@ -35,6 +35,27 @@ describe("MessageClassifier", () => {
     });
   });
 
+  describe("says", () => {
+    test("incoming say: 'Xal says : hi there'", () => {
+      const result = classifier.classify("Xal says : hi there");
+      expect(result.type).toBe("say");
+      expect(result.sender).toBe("Xal");
+      expect(result.isOutgoing).toBe(false);
+    });
+
+    test("outgoing say: 'You say : hello'", () => {
+      const result = classifier.classify("You say : hello");
+      expect(result.type).toBe("say");
+      expect(result.isOutgoing).toBe(true);
+    });
+
+    test("say without space before colon: 'Xal says: hi'", () => {
+      const result = classifier.classify("Xal says: hi");
+      expect(result.type).toBe("say");
+      expect(result.sender).toBe("Xal");
+    });
+  });
+
   describe("channels", () => {
     test("channel message: '[chaos] Blizz : hello i'm blizz'", () => {
       const result = classifier.classify("[chaos] Blizz : hello i'm blizz");

@@ -9,6 +9,7 @@ import { Menu, type MenuItem } from "./Menu";
 import { TextPrompt } from "./TextPrompt";
 import { SettingsManager } from "../settings/Settings";
 import { ChatPane } from "./ChatPane";
+import { MessageClassifier } from "../messages/MessageClassifier";
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -34,6 +35,7 @@ class MudClient {
   private menu: Menu;
   private prompt: TextPrompt;
   private chatPane: ChatPane;
+  private classifier: MessageClassifier;
   private commPanelHeight = 5;
 
   private input = "";
@@ -84,6 +86,7 @@ class MudClient {
     this.menu = new Menu();
     this.prompt = new TextPrompt();
     this.chatPane = new ChatPane(this.commPanelHeight);
+    this.classifier = new MessageClassifier();
 
     this.setupTelnet();
     this.setupInput();
@@ -518,16 +521,37 @@ class MudClient {
       this.debugLogStream.write(`---\n`);
     }
 
-    // Store lines in history for resize redraw
-    const lines = toFlush.split("\n").filter(line => line.length > 0);
-    this.outputHistory.push(...lines);
+    // Classify and route lines
+    const lines = toFlush.split("\n");
+    const mainLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.length === 0) continue;
+
+      // Strip ANSI codes for classification only
+      const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+      const classified = this.classifier.classify(stripped);
+
+      if (classified.type === "tell" || classified.type === "channel" || classified.type === "say") {
+        // Route to comm panel (with original ANSI colors)
+        this.chatPane.addMessage(line);
+      } else {
+        // Keep for main output
+        mainLines.push(line);
+      }
+    }
+
+    // Store main lines in history for resize redraw
+    this.outputHistory.push(...mainLines);
     // Trim to max history
     if (this.outputHistory.length > this.maxOutputHistory) {
       this.outputHistory = this.outputHistory.slice(-this.maxOutputHistory);
     }
 
-    // Write output - let terminal handle scrolling within the region
-    process.stdout.write(toFlush);
+    // Write main output only - let terminal handle scrolling within the region
+    if (mainLines.length > 0) {
+      process.stdout.write(mainLines.join("\n"));
+    }
 
     // Extract and save last SGR (color) sequence for next flush
     const sgrMatches = toFlush.match(/\x1b\[[0-9;]*m/g);
