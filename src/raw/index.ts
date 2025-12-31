@@ -36,7 +36,11 @@ class MudClient {
   private prompt: TextPrompt;
   private chatPane: ChatPane;
   private classifier: MessageClassifier;
-  private commPanelHeight = 5;
+
+  // Effective comm panel height (0 if disabled)
+  private get commPanelHeight(): number {
+    return this.settings.get("commPanel") ? this.settings.get("commPanelHeight") : 0;
+  }
 
   private input = "";
   private cursorPos = 0;
@@ -97,7 +101,8 @@ class MudClient {
     process.stdout.on("resize", () => {
       if (this.appState === "client") {
         const termHeight = process.stdout.rows || 24;
-        const mainScrollTop = this.commPanelHeight + 2;
+        const panelHeight = this.commPanelHeight;
+        const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
         const mainScrollBottom = termHeight - 2;
         const scrollHeight = mainScrollBottom - mainScrollTop + 1;
 
@@ -118,7 +123,9 @@ class MudClient {
         }
 
         // Redraw fixed elements
-        this.chatPane.setPosition(1, this.commPanelHeight);
+        if (panelHeight > 0) {
+          this.chatPane.setPosition(1, panelHeight);
+        }
         this.redrawInput();
       }
     });
@@ -393,21 +400,25 @@ class MudClient {
 
   private setupScrollRegion(): void {
     const termHeight = process.stdout.rows || 24;
-    // Layout (comm panel at top):
-    //   Row 1 to commPanelHeight: comm panel
-    //   Row commPanelHeight+1: divider below comm panel
-    //   Row commPanelHeight+2 to termHeight-2: main output (scroll region)
+    const panelHeight = this.commPanelHeight;
+    // Layout (comm panel at top if enabled):
+    //   Row 1 to panelHeight: comm panel (if enabled)
+    //   Row panelHeight+1: divider below comm panel (if enabled)
+    //   Row panelHeight+2 to termHeight-2: main output (scroll region)
     //   Row termHeight-1: divider above input
     //   Row termHeight: input line
-    const mainScrollTop = this.commPanelHeight + 2;
+    // When panel disabled (height=0): scroll region starts at row 1
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
 
-    // Set scroll region for main output (below comm panel)
+    // Set scroll region for main output
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     // Move cursor to top of scroll region
     process.stdout.write(CURSOR_TO(mainScrollTop, 1));
     // Set chat pane position (top of terminal)
-    this.chatPane.setPosition(1, this.commPanelHeight);
+    if (panelHeight > 0) {
+      this.chatPane.setPosition(1, panelHeight);
+    }
   }
 
   private resetScrollRegion(): void {
@@ -478,7 +489,8 @@ class MudClient {
     }
 
     const termHeight = process.stdout.rows || 24;
-    const mainScrollTop = this.commPanelHeight + 2;
+    const panelHeight = this.commPanelHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
 
     // Ensure scroll region is correct (defensive - prevents drift)
@@ -524,21 +536,26 @@ class MudClient {
     // Classify and route lines
     const lines = toFlush.split("\n");
     const mainLines: string[] = [];
+    const commPanelEnabled = this.settings.get("commPanel");
 
     for (const line of lines) {
       if (line.length === 0) continue;
 
-      // Strip ANSI codes for classification only
-      const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
-      const classified = this.classifier.classify(stripped);
+      // Route to comm panel if enabled
+      if (commPanelEnabled) {
+        // Strip ANSI codes for classification only
+        const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+        const classified = this.classifier.classify(stripped);
 
-      if (classified.type === "tell" || classified.type === "channel" || classified.type === "say") {
-        // Route to comm panel (with original ANSI colors)
-        this.chatPane.addMessage(line);
-      } else {
-        // Keep for main output
-        mainLines.push(line);
+        if (classified.type === "tell" || classified.type === "channel" || classified.type === "say") {
+          // Route to comm panel (with original ANSI colors)
+          this.chatPane.addMessage(line);
+          continue;
+        }
       }
+
+      // Keep for main output
+      mainLines.push(line);
     }
 
     // Store main lines in history for resize redraw
@@ -1355,7 +1372,8 @@ class MudClient {
   private echoCommand(cmd: string): void {
     if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
-    const mainScrollTop = this.commPanelHeight + 2;
+    const panelHeight = this.commPanelHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
@@ -1392,19 +1410,23 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
+    const commPanelEnabled = this.settings.get("commPanel");
 
-    // Layout rows (comm panel at top)
-    const commPanelTopRow = 1;
-    const upperDividerRow = this.commPanelHeight + 1;  // Below comm panel
+    // Layout rows (comm panel at top if enabled)
     const lowerDividerRow = termHeight - 1;            // Above input
 
-    // Render chat pane at top
-    this.chatPane.setPosition(commPanelTopRow, this.commPanelHeight);
-    this.chatPane.render();
+    if (commPanelEnabled) {
+      const commPanelTopRow = 1;
+      const upperDividerRow = this.commPanelHeight + 1;  // Below comm panel
 
-    // Draw upper divider (between comm panel and main output)
-    process.stdout.write(CURSOR_TO(upperDividerRow, 1));
-    process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
+      // Render chat pane at top
+      this.chatPane.setPosition(commPanelTopRow, this.commPanelHeight);
+      this.chatPane.render();
+
+      // Draw upper divider (between comm panel and main output)
+      process.stdout.write(CURSOR_TO(upperDividerRow, 1));
+      process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
+    }
 
     // Draw lower divider (between main output and input)
     process.stdout.write(CURSOR_TO(lowerDividerRow, 1));
@@ -1440,7 +1462,8 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
-    const mainScrollTop = this.commPanelHeight + 2;
+    const panelHeight = this.commPanelHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
     const prefix = "\x1b[36m[Client]\x1b[0m ";
     const prefixLen = 10; // "[Client] " visible length
