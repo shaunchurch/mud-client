@@ -1180,16 +1180,13 @@ class MudClient {
       } else if (command === "alias" && parts[1] && parts[2]) {
         const name = parts[1];
         const expansion = parts.slice(2).join(" ");
-        if (this.charManager.setAlias(name, expansion)) {
-          this.echo(`Alias set: ${name} = ${expansion}`);
-        } else {
-          this.echo("No character selected.");
-        }
+        this.charManager.setAlias(name, expansion);
+        this.echo(`Alias set: ${name} = ${expansion}`);
       } else if (command === "unalias" && parts[1]) {
         if (this.charManager.removeAlias(parts[1])) {
           this.echo(`Alias removed: ${parts[1]}`);
         } else {
-          this.echo("No character selected or alias not found.");
+          this.echo("Alias not found.");
         }
       } else if (command === "aliases") {
         const aliases = this.charManager.getAliases();
