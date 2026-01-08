@@ -163,9 +163,9 @@ export class Pane {
     const visible = this.messages.slice(startIndex, endIndex);
     const startRow = this.topRow + (this.height - visible.length);
 
-    // Focus indicator: yellow left border
-    const borderChar = this._focused ? "\x1b[33m│\x1b[0m " : "";
-    const borderWidth = this._focused ? 2 : 0;
+    // Focus indicator: yellow left border (single char, no shift when solo)
+    const borderChar = this._focused ? "\x1b[33m│\x1b[0m" : "";
+    const borderWidth = this._focused ? 1 : 0;
     const contentWidth = termWidth - borderWidth;
 
     // Clear all lines in pane

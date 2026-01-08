@@ -1276,19 +1276,19 @@ class MudClient {
     const focusablePanes = this.getFocusablePanes();
     const focusedPaneId = focusablePanes[this.focusedPaneIndex];
 
-    // Update focus state on all panes
+    // Update focus state on all panes (no border when solo'd)
     for (const paneId of this.paneManager.getPaneIds()) {
       const pane = this.paneManager.getPane(paneId);
       if (pane) {
-        pane.setFocused(paneId === focusedPaneId);
+        pane.setFocused(!this.isSolo && paneId === focusedPaneId);
       }
     }
 
     // Re-render panes to show focus indicator
     this.paneManager.renderAll();
 
-    // Redraw main with border if focused
-    if (focusedPaneId === "main") {
+    // Redraw main with border if focused (and not solo'd)
+    if (!this.isSolo && focusedPaneId === "main") {
       this.redrawMainWithScroll();
     }
   }
@@ -1403,12 +1403,12 @@ class MudClient {
     const mainScrollBottom = termHeight - 2;
     const scrollHeight = mainScrollBottom - mainScrollTop + 1;
 
-    // Check if main is focused
+    // Check if main is focused (no border when solo'd)
     const focusablePanes = this.getFocusablePanes();
     const focusedPaneId = focusablePanes[this.focusedPaneIndex];
-    const mainFocused = this.inPaneFocus && focusedPaneId === "main";
-    const borderChar = mainFocused ? "\x1b[33m│\x1b[0m " : "";
-    const borderWidth = mainFocused ? 2 : 0;
+    const mainFocused = this.inPaneFocus && !this.isSolo && focusedPaneId === "main";
+    const borderChar = mainFocused ? "\x1b[33m│\x1b[0m" : "";
+    const borderWidth = mainFocused ? 1 : 0;
 
     // Calculate visible portion with scroll offset
     const endIndex = this.outputHistory.length - this.mainScrollOffset;
