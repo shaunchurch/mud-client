@@ -26,6 +26,7 @@ export class Pane {
   private height: number;
   private originalHeight: number;
   private topRow: number = 0;
+  private scrollOffset: number = 0; // 0 = bottom (most recent), positive = scrolled up
 
   constructor(config: PaneConfig) {
     this.id = config.id;
@@ -122,11 +123,35 @@ export class Pane {
     this.height = this.originalHeight;
   }
 
+  scrollUp(lines: number): void {
+    const maxScroll = Math.max(0, this.messages.length - this.height);
+    this.scrollOffset = Math.min(maxScroll, this.scrollOffset + lines);
+  }
+
+  scrollDown(lines: number): void {
+    this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+  }
+
+  resetScroll(): void {
+    this.scrollOffset = 0;
+  }
+
+  getScrollOffset(): number {
+    return this.scrollOffset;
+  }
+
+  getMessageCount(): number {
+    return this.messages.length;
+  }
+
   render(): void {
     if (this.topRow === 0) return;
 
     const termWidth = process.stdout.columns || 80;
-    const visible = this.messages.slice(-this.height);
+    // Calculate visible window with scroll offset
+    const endIndex = this.messages.length - this.scrollOffset;
+    const startIndex = Math.max(0, endIndex - this.height);
+    const visible = this.messages.slice(startIndex, endIndex);
     const startRow = this.topRow + (this.height - visible.length);
 
     // Clear all lines in pane

@@ -87,6 +87,7 @@ class MudClient {
   private inPaneFocus = false;
   private focusedPaneIndex = 0;
   private savedPaneStates: Map<string, boolean> = new Map(); // For solo/restore
+  private mainScrollOffset = 0; // Scroll offset for main output history
 
   constructor() {
     this.client = new TelnetClient();
@@ -1220,8 +1221,9 @@ class MudClient {
     process.stdout.write(CLEAR_LINE + "\r" + line);
   }
 
-  // Pane focus mode - Escape to enter, Tab to cycle, s to solo, Escape/Enter to exit
+  // Pane focus mode - Escape to enter, Tab to cycle, s to solo, scroll with Ctrl+U/D
   // "main" is always included as a virtual pane representing the main output area
+  // Escape/Enter exits AND restores layout
 
   private getFocusablePanes(): string[] {
     // Always include "main" plus any enabled panes
@@ -1229,20 +1231,45 @@ class MudClient {
   }
 
   private enterPaneFocus(): void {
+    // Save pane states on entering focus mode
+    this.savedPaneStates.clear();
+    for (const status of this.paneManager.getPaneStatus()) {
+      this.savedPaneStates.set(status.id, status.enabled);
+    }
+
     this.inPaneFocus = true;
     this.focusedPaneIndex = 0; // Start on "main"
+    this.mainScrollOffset = 0;
     this.redrawPaneFocus();
   }
 
   private exitPaneFocus(): void {
     this.inPaneFocus = false;
+
+    // Restore pane states and heights on exit
+    for (const [paneId, enabled] of this.savedPaneStates) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.restoreOriginalHeight();
+        pane.resetScroll();
+      }
+      if (enabled) {
+        this.paneManager.enablePane(paneId);
+      } else {
+        this.paneManager.disablePane(paneId);
+      }
+    }
+    this.savedPaneStates.clear();
+    this.mainScrollOffset = 0;
+
+    this.refreshScreen();
     this.redrawInput();
   }
 
   private handlePaneFocusKey(key: string): void {
     const focusablePanes = this.getFocusablePanes();
 
-    // Escape or Enter - exit focus mode
+    // Escape or Enter - exit focus mode (restores layout)
     if (key === "\x1b" || key === "\r" || key === "\n") {
       this.exitPaneFocus();
       return;
@@ -1262,16 +1289,90 @@ class MudClient {
       return;
     }
 
-    // 's' - solo this pane (disable all others)
+    // 's' - solo this pane (stay in focus mode)
     if (key === "s" || key === "S") {
       this.soloPaneFocused();
       return;
     }
 
-    // 'r' - restore all panes
-    if (key === "r" || key === "R") {
-      this.restorePanes();
+    // Ctrl+U - scroll up half page
+    if (key === "\x15") {
+      this.scrollFocusedPane("up");
       return;
+    }
+
+    // Ctrl+D - scroll down half page
+    if (key === "\x04") {
+      this.scrollFocusedPane("down");
+      return;
+    }
+
+    // Arrow up - scroll up one line
+    if (key === "\x1b[A") {
+      this.scrollFocusedPane("up", 1);
+      return;
+    }
+
+    // Arrow down - scroll down one line
+    if (key === "\x1b[B") {
+      this.scrollFocusedPane("down", 1);
+      return;
+    }
+
+    // Ignore all other input (can't type in focus mode)
+  }
+
+  private scrollFocusedPane(direction: "up" | "down", lines?: number): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+    const termHeight = process.stdout.rows || 24;
+    const halfPage = Math.floor(termHeight / 2);
+    const scrollAmount = lines ?? halfPage;
+
+    if (focusedPaneId === "main") {
+      // Scroll main output history
+      const maxScroll = Math.max(0, this.outputHistory.length - (termHeight - this.totalPaneHeight - 3));
+      if (direction === "up") {
+        this.mainScrollOffset = Math.min(maxScroll, this.mainScrollOffset + scrollAmount);
+      } else {
+        this.mainScrollOffset = Math.max(0, this.mainScrollOffset - scrollAmount);
+      }
+      this.redrawMainWithScroll();
+    } else {
+      // Scroll the pane
+      const pane = this.paneManager.getPane(focusedPaneId);
+      if (pane) {
+        if (direction === "up") {
+          pane.scrollUp(scrollAmount);
+        } else {
+          pane.scrollDown(scrollAmount);
+        }
+        pane.render();
+      }
+    }
+    this.redrawPaneFocus();
+  }
+
+  private redrawMainWithScroll(): void {
+    const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
+    const mainScrollBottom = termHeight - 2;
+    const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+    // Calculate visible portion with scroll offset
+    const endIndex = this.outputHistory.length - this.mainScrollOffset;
+    const startIndex = Math.max(0, endIndex - scrollHeight);
+    const visible = this.outputHistory.slice(startIndex, endIndex);
+
+    // Clear and redraw main area
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
+    for (let i = 0; i < scrollHeight; i++) {
+      const row = mainScrollTop + i;
+      process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE);
+      if (i < visible.length) {
+        process.stdout.write(visible[i]);
+      }
     }
   }
 
@@ -1279,20 +1380,13 @@ class MudClient {
     const focusablePanes = this.getFocusablePanes();
     const focusedPaneId = focusablePanes[this.focusedPaneIndex];
 
-    // Save current states before solo
-    this.savedPaneStates.clear();
-    for (const status of this.paneManager.getPaneStatus()) {
-      this.savedPaneStates.set(status.id, status.enabled);
-    }
-
     if (focusedPaneId === "main") {
       // Solo main = disable all panes (main output gets full screen)
       for (const paneId of this.paneManager.getPaneIds()) {
         this.paneManager.disablePane(paneId);
-        this.paneConfig.setPaneEnabled(paneId, false);
       }
     } else {
-      // Solo a specific pane = expand it to full height, disable main scroll region
+      // Solo a specific pane = expand it to full height
       const termHeight = process.stdout.rows || 24;
       const fullHeight = termHeight - 2; // Leave room for divider + input
 
@@ -1306,36 +1400,15 @@ class MudClient {
       for (const paneId of this.paneManager.getPaneIds()) {
         if (paneId !== focusedPaneId) {
           this.paneManager.disablePane(paneId);
-          this.paneConfig.setPaneEnabled(paneId, false);
         }
       }
+
+      // Keep focus on the solo'd pane (find its new index)
+      const newFocusablePanes = this.getFocusablePanes();
+      this.focusedPaneIndex = newFocusablePanes.indexOf(focusedPaneId);
+      if (this.focusedPaneIndex === -1) this.focusedPaneIndex = 0;
     }
 
-    this.focusedPaneIndex = 0; // Reset to main
-    this.refreshScreen();
-    this.redrawPaneFocus();
-  }
-
-  private restorePanes(): void {
-    if (this.savedPaneStates.size === 0) return;
-
-    // Restore saved states and original heights
-    for (const [paneId, enabled] of this.savedPaneStates) {
-      const pane = this.paneManager.getPane(paneId);
-      if (pane) {
-        pane.restoreOriginalHeight();
-      }
-      if (enabled) {
-        this.paneManager.enablePane(paneId);
-        this.paneConfig.setPaneEnabled(paneId, true);
-      } else {
-        this.paneManager.disablePane(paneId);
-        this.paneConfig.setPaneEnabled(paneId, false);
-      }
-    }
-
-    this.savedPaneStates.clear();
-    this.focusedPaneIndex = 0;
     this.refreshScreen();
     this.redrawPaneFocus();
   }
@@ -1343,9 +1416,21 @@ class MudClient {
   private redrawPaneFocus(): void {
     const focusablePanes = this.getFocusablePanes();
     const focusedPane = focusablePanes[this.focusedPaneIndex] || "main";
-    const hasSaved = this.savedPaneStates.size > 0;
-    const restoreHint = hasSaved ? ", r=restore" : "";
-    const line = `\x1b[33m[PANE FOCUS]\x1b[0m ${focusedPane} (Tab=next, s=solo${restoreHint}, Esc=exit)`;
+
+    // Build scroll indicator
+    let scrollInfo = "";
+    if (focusedPane === "main") {
+      if (this.mainScrollOffset > 0) {
+        scrollInfo = ` [↑${this.mainScrollOffset}]`;
+      }
+    } else {
+      const pane = this.paneManager.getPane(focusedPane);
+      if (pane && pane.getScrollOffset() > 0) {
+        scrollInfo = ` [↑${pane.getScrollOffset()}]`;
+      }
+    }
+
+    const line = `\x1b[33m[PANE]\x1b[0m ${focusedPane}${scrollInfo} (Tab, s=solo, Ctrl+U/D=scroll, Esc=exit)`;
     const termHeight = process.stdout.rows || 24;
     process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE + line);
   }
@@ -1439,11 +1524,12 @@ class MudClient {
         this.echo("  Ctrl+C - Disconnect (or exit if disconnected)");
         this.echo("  Escape - Enter pane focus mode");
         this.echo("");
-        this.echo("Pane focus mode (when panes enabled):");
-        this.echo("  Tab - Cycle to next pane");
-        this.echo("  s - Solo focused pane (hide others)");
-        this.echo("  r - Restore all panes");
-        this.echo("  Escape/Enter - Exit focus mode");
+        this.echo("Pane focus mode:");
+        this.echo("  Tab - Cycle between main and panes");
+        this.echo("  s - Solo focused pane (expand to full screen)");
+        this.echo("  Ctrl+U/D - Scroll up/down half page");
+        this.echo("  Up/Down - Scroll one line");
+        this.echo("  Escape/Enter - Exit and restore layout");
         this.echo("");
         this.echo("Movement (Shift+key, roguelike layout):");
         this.echo("  H/L/K/J - West/East/North/South");
