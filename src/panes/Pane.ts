@@ -28,6 +28,7 @@ export class Pane {
   private originalHeight: number;
   private topRow: number = 0;
   private scrollOffset: number = 0; // 0 = bottom (most recent), positive = scrolled up
+  private _hasNewContent: boolean = false; // New content arrived while scrolled
 
   constructor(config: PaneConfig) {
     this.id = config.id;
@@ -108,8 +109,18 @@ export class Pane {
       timestamp: new Date(),
     });
 
+    // If scrolled up, lock the view by incrementing offset
+    if (this.scrollOffset > 0) {
+      this.scrollOffset++;
+      this._hasNewContent = true;
+    }
+
     if (this.messages.length > this.maxMessages) {
       this.messages.shift();
+      // Adjust scroll offset if we removed a message while scrolled
+      if (this.scrollOffset > 0) {
+        this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+      }
     }
 
     this.render();
@@ -164,10 +175,19 @@ export class Pane {
 
   scrollDown(lines: number): void {
     this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+    // Clear new content indicator when we reach the bottom
+    if (this.scrollOffset === 0) {
+      this._hasNewContent = false;
+    }
   }
 
   resetScroll(): void {
     this.scrollOffset = 0;
+    this._hasNewContent = false;
+  }
+
+  hasNewContent(): boolean {
+    return this._hasNewContent;
   }
 
   getScrollOffset(): number {
@@ -214,6 +234,15 @@ export class Pane {
       }
 
       process.stdout.write(CURSOR_TO(row, 1) + borderChar + text);
+    }
+
+    // Show new content indicator at bottom-right when scrolled with new content
+    if (this._hasNewContent && this.scrollOffset > 0) {
+      const indicator = "\x1b[38;5;242m↓new\x1b[0m"; // Dark grey
+      const indicatorLen = 4; // "↓new"
+      const bottomRow = this.topRow + this.height - 1;
+      const indicatorCol = termWidth - indicatorLen;
+      process.stdout.write(CURSOR_TO(bottomRow, indicatorCol) + indicator);
     }
   }
 
