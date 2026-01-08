@@ -15,7 +15,6 @@ export interface AppSettings {
   inputMode: InputMode;
   wordWrap: boolean;
   commPanel: boolean;
-  commPanelHeight: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -27,7 +26,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   inputMode: "select",
   wordWrap: false,
   commPanel: true,
-  commPanelHeight: 5,
 };
 
 const VALID_VALUES: Record<keyof AppSettings, readonly string[]> = {
@@ -39,7 +37,6 @@ const VALID_VALUES: Record<keyof AppSettings, readonly string[]> = {
   inputMode: ["select", "clear"] as const,
   wordWrap: ["true", "false"] as const,
   commPanel: ["true", "false"] as const,
-  commPanelHeight: ["3", "5", "7", "10", "15"] as const,
 };
 
 const DESCRIPTIONS: Record<keyof AppSettings, string> = {
@@ -50,8 +47,7 @@ const DESCRIPTIONS: Record<keyof AppSettings, string> = {
   movementKeys: "Enable Shift+HJKL roguelike movement shortcuts",
   inputMode: "After sending: select (highlight text) or clear (empty input)",
   wordWrap: "Wrap long lines from the MUD to fit terminal width",
-  commPanel: "Show communications panel for tells/says/channels",
-  commPanelHeight: "Number of lines for communications panel",
+  commPanel: "Show communications panes (configure in ~/.config/mud-client/panes.yaml)",
 };
 
 export class SettingsManager {
@@ -98,8 +94,6 @@ export class SettingsManager {
     const currentValue = this.settings[key];
     if (typeof currentValue === "boolean") {
       (this.settings[key] as boolean) = value === "true";
-    } else if (typeof currentValue === "number") {
-      (this.settings[key] as number) = parseInt(value, 10);
     } else {
       (this.settings[key] as string) = value;
     }

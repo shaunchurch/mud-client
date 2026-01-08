@@ -8,7 +8,8 @@ import type { CharacterConfig } from "../character/Character";
 import { Menu, type MenuItem } from "./Menu";
 import { TextPrompt } from "./TextPrompt";
 import { SettingsManager } from "../settings/Settings";
-import { ChatPane } from "./ChatPane";
+import { PaneManager } from "../panes/PaneManager";
+import { PaneConfigStore } from "../panes/PaneConfigStore";
 import { MessageClassifier } from "../messages/MessageClassifier";
 
 // ANSI escape codes
@@ -34,12 +35,13 @@ class MudClient {
   private settings: SettingsManager;
   private menu: Menu;
   private prompt: TextPrompt;
-  private chatPane: ChatPane;
+  private paneConfig: PaneConfigStore;
+  private paneManager: PaneManager;
   private classifier: MessageClassifier;
 
-  // Effective comm panel height (0 if disabled)
-  private get commPanelHeight(): number {
-    return this.settings.get("commPanel") ? this.settings.get("commPanelHeight") : 0;
+  // Total height of all top panes (0 if disabled)
+  private get totalPaneHeight(): number {
+    return this.settings.get("commPanel") ? this.paneManager.getTotalHeight() : 0;
   }
 
   private input = "";
@@ -89,8 +91,9 @@ class MudClient {
     this.settings = new SettingsManager();
     this.menu = new Menu();
     this.prompt = new TextPrompt();
-    this.chatPane = new ChatPane(this.commPanelHeight);
-    this.classifier = new MessageClassifier();
+    this.paneConfig = new PaneConfigStore();
+    this.paneManager = new PaneManager(this.paneConfig.getPanes());
+    this.classifier = new MessageClassifier(this.paneConfig.getClassifiers());
 
     this.setupTelnet();
     this.setupInput();
@@ -101,7 +104,7 @@ class MudClient {
     process.stdout.on("resize", () => {
       if (this.appState === "client") {
         const termHeight = process.stdout.rows || 24;
-        const panelHeight = this.commPanelHeight;
+        const panelHeight = this.totalPaneHeight;
         const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
         const mainScrollBottom = termHeight - 2;
         const scrollHeight = mainScrollBottom - mainScrollTop + 1;
@@ -122,9 +125,10 @@ class MudClient {
           }
         }
 
-        // Redraw fixed elements
+        // Redraw panes
         if (panelHeight > 0) {
-          this.chatPane.setPosition(1, panelHeight);
+          this.paneManager.layoutPanes(1);
+          this.paneManager.renderAll();
         }
         this.redrawInput();
       }
@@ -400,14 +404,14 @@ class MudClient {
 
   private setupScrollRegion(): void {
     const termHeight = process.stdout.rows || 24;
-    const panelHeight = this.commPanelHeight;
-    // Layout (comm panel at top if enabled):
-    //   Row 1 to panelHeight: comm panel (if enabled)
-    //   Row panelHeight+1: divider below comm panel (if enabled)
+    const panelHeight = this.totalPaneHeight;
+    // Layout (panes at top if enabled):
+    //   Row 1 to panelHeight: stacked panes (if enabled)
+    //   Row panelHeight+1: divider below panes (if enabled)
     //   Row panelHeight+2 to termHeight-2: main output (scroll region)
     //   Row termHeight-1: divider above input
     //   Row termHeight: input line
-    // When panel disabled (height=0): scroll region starts at row 1
+    // When panes disabled (height=0): scroll region starts at row 1
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
 
@@ -415,9 +419,9 @@ class MudClient {
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     // Move cursor to top of scroll region
     process.stdout.write(CURSOR_TO(mainScrollTop, 1));
-    // Set chat pane position (top of terminal)
+    // Layout panes (top of terminal)
     if (panelHeight > 0) {
-      this.chatPane.setPosition(1, panelHeight);
+      this.paneManager.layoutPanes(1);
     }
   }
 
@@ -489,7 +493,7 @@ class MudClient {
     }
 
     const termHeight = process.stdout.rows || 24;
-    const panelHeight = this.commPanelHeight;
+    const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
 
@@ -536,20 +540,19 @@ class MudClient {
     // Classify and route lines
     const lines = toFlush.split("\n");
     const mainLines: string[] = [];
-    const commPanelEnabled = this.settings.get("commPanel");
+    const panesEnabled = this.settings.get("commPanel");
 
     for (const line of lines) {
       if (line.length === 0) continue;
 
-      // Route to comm panel if enabled
-      if (commPanelEnabled) {
+      // Route to panes if enabled
+      if (panesEnabled) {
         // Strip ANSI codes for classification only
         const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
         const classified = this.classifier.classify(stripped);
 
-        if (classified.type === "tell" || classified.type === "channel" || classified.type === "say") {
-          // Route to comm panel (with original ANSI colors)
-          this.chatPane.addMessage(line);
+        // Route to matching panes - if consumed, skip main output
+        if (this.paneManager.route(line, classified)) {
           continue;
         }
       }
@@ -1296,8 +1299,6 @@ class MudClient {
         this.echo("  H/L/K/J - West/East/North/South");
         this.echo("  Y/U/B/N - NW/NE/SW/SE");
         this.echo("  </> - Up/Down, ; = look");
-        // Test comm panel (temporary)
-        this.chatPane.addMessage("\x1b[33m[Test]\x1b[0m Comm panel test message");
       } else if (command === "config") {
         this.echo("Settings:");
         const settings = this.settings.getAll();
@@ -1345,11 +1346,48 @@ class MudClient {
         } else if (this.settings.set(key as keyof import("../settings/Settings").AppSettings, value)) {
           this.echo(`Setting updated: ${key} = ${value}`);
           this.updatePrompt();
-          this.redrawInput();
+          this.refreshScreen();
         } else {
           const validValues = this.settings.getValidValues(key);
           this.echo(`Invalid value: ${value}`);
           this.echo(`Valid values: ${validValues.join(", ")}`);
+        }
+      } else if (command === "pane" || command === "panes") {
+        const subCommand = parts[1];
+        const paneId = parts[1];
+        const action = parts[2];
+
+        if (!subCommand) {
+          // List all panes and their status
+          const status = this.paneManager.getPaneStatus();
+          if (status.length === 0) {
+            this.echo("No panes configured. Edit ~/.config/mud-client/panes.yaml");
+          } else {
+            this.echo("Panes:");
+            for (const pane of status) {
+              const state = pane.enabled ? "enabled" : "disabled";
+              this.echo(`  ${pane.id}: ${state}`);
+            }
+            this.echo("");
+            this.echo("Usage: /pane <id> enable|disable");
+          }
+        } else if (action === "enable" || action === "enabled") {
+          if (this.paneManager.enablePane(paneId)) {
+            this.echo(`Pane '${paneId}' enabled`);
+            this.refreshScreen();
+          } else {
+            this.echo(`Unknown pane: ${paneId}`);
+          }
+        } else if (action === "disable" || action === "disabled") {
+          if (this.paneManager.disablePane(paneId)) {
+            this.echo(`Pane '${paneId}' disabled`);
+            this.refreshScreen();
+          } else {
+            this.echo(`Unknown pane: ${paneId}`);
+          }
+        } else {
+          this.echo("Usage: /pane <id> enable|disable");
+          this.echo("       /panes - list all panes");
         }
       } else {
         this.echo(`Unknown command: ${command}`);
@@ -1372,7 +1410,7 @@ class MudClient {
   private echoCommand(cmd: string): void {
     if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
-    const panelHeight = this.commPanelHeight;
+    const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
@@ -1410,20 +1448,20 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
-    const commPanelEnabled = this.settings.get("commPanel");
+    const panesEnabled = this.settings.get("commPanel");
 
-    // Layout rows (comm panel at top if enabled)
+    // Layout rows (panes at top if enabled)
     const lowerDividerRow = termHeight - 1;            // Above input
 
-    if (commPanelEnabled) {
-      const commPanelTopRow = 1;
-      const upperDividerRow = this.commPanelHeight + 1;  // Below comm panel
+    if (panesEnabled) {
+      const totalPaneHeight = this.totalPaneHeight;
+      const upperDividerRow = totalPaneHeight + 1;  // Below panes
 
-      // Render chat pane at top
-      this.chatPane.setPosition(commPanelTopRow, this.commPanelHeight);
-      this.chatPane.render();
+      // Layout and render all panes at top
+      this.paneManager.layoutPanes(1);
+      this.paneManager.renderAll();
 
-      // Draw upper divider (between comm panel and main output)
+      // Draw upper divider (between panes and main output)
       process.stdout.write(CURSOR_TO(upperDividerRow, 1));
       process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
     }
@@ -1462,7 +1500,7 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
-    const panelHeight = this.commPanelHeight;
+    const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
     const prefix = "\x1b[36m[Client]\x1b[0m ";
@@ -1579,6 +1617,40 @@ class MudClient {
 
     // Default: use word buffer
     return Array.from(this.wordBuffer);
+  }
+
+  // Refresh screen after pane layout changes
+  private refreshScreen(): void {
+    if (this.appState !== "client") return;
+
+    const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
+    const mainScrollBottom = termHeight - 2;
+    const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+    // Clear entire screen and reset
+    process.stdout.write(RESET_SCROLL_REGION);
+    process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+
+    // Re-establish scroll region
+    this.setupScrollRegion();
+
+    // Redraw main output from history (last N lines that fit)
+    const linesToShow = this.outputHistory.slice(-scrollHeight);
+    if (linesToShow.length > 0) {
+      process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+      for (const line of linesToShow) {
+        process.stdout.write(line + "\n");
+      }
+    }
+
+    // Redraw panes
+    if (panelHeight > 0) {
+      this.paneManager.layoutPanes(1);
+      this.paneManager.renderAll();
+    }
+    this.redrawInput();
   }
 
   private cleanup(): void {
