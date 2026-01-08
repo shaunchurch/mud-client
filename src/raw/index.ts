@@ -500,22 +500,11 @@ class MudClient {
     // Ensure scroll region is correct (defensive - prevents drift)
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
 
-    // Save cursor, move to scroll region, output, restore cursor
+    // Save cursor position for later restoration
     process.stdout.write(SAVE_CURSOR);
-
-    // Move to bottom of scroll region
-    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
-
-    // Scroll first by writing a newline, so new content appears below existing
-    process.stdout.write("\n");
 
     // Strip trailing newlines since we handle scrolling ourselves
     toFlush = toFlush.replace(/\n+$/, "");
-
-    // Restore previous color state before writing
-    if (this.lastColorState) {
-      process.stdout.write(this.lastColorState);
-    }
 
     // Strip bare CR characters - they cause display corruption with scroll regions
     // (CRLF has already been normalized to LF by TelnetClient)
@@ -570,7 +559,14 @@ class MudClient {
 
     // Write main output only - let terminal handle scrolling within the region
     if (mainLines.length > 0) {
-      process.stdout.write(mainLines.join("\n"));
+      // Position cursor to scroll region bottom (pane rendering may have moved it)
+      process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
+      // Restore previous color state before writing main output
+      if (this.lastColorState) {
+        process.stdout.write(this.lastColorState);
+      }
+      // Scroll and write content - leading newline scrolls region
+      process.stdout.write("\n" + mainLines.join("\n"));
     }
 
     // Extract and save last SGR (color) sequence for next flush
