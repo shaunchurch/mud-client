@@ -1284,11 +1284,11 @@ class MudClient {
       }
     }
 
-    // Re-render panes to show focus indicator
+    // Re-render panes to show/clear focus indicator
     this.paneManager.renderAll();
 
-    // Redraw main with border if focused (and not solo'd)
-    if (!this.isSolo && focusedPaneId === "main") {
+    // Always redraw main to show/clear border when in focus mode
+    if (this.inPaneFocus && !this.isSolo) {
       this.redrawMainWithScroll();
     }
   }
