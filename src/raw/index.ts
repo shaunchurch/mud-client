@@ -1366,6 +1366,18 @@ class MudClient {
       return;
     }
 
+    // + or = - grow pane height
+    if (key === "+" || key === "=") {
+      this.resizeFocusedPane(1);
+      return;
+    }
+
+    // - - shrink pane height
+    if (key === "-") {
+      this.resizeFocusedPane(-1);
+      return;
+    }
+
     // Ignore all other input (can't type in focus mode)
   }
 
@@ -1398,6 +1410,28 @@ class MudClient {
       }
     }
     this.redrawPaneFocus();
+  }
+
+  private resizeFocusedPane(delta: number): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+
+    // Can't resize main pane
+    if (focusedPaneId === "main") {
+      return;
+    }
+
+    const pane = this.paneManager.getPane(focusedPaneId);
+    if (!pane) return;
+
+    const currentHeight = pane.getOriginalHeight();
+    const newHeight = Math.max(1, Math.min(50, currentHeight + delta));
+
+    if (newHeight !== currentHeight) {
+      pane.setOriginalHeight(newHeight);
+      this.paneConfig.setPaneHeight(focusedPaneId, newHeight);
+      this.refreshScreen();
+    }
   }
 
   private redrawMainWithScroll(): void {
