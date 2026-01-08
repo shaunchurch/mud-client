@@ -2,10 +2,12 @@ import { EventEmitter } from "events";
 import type { CharacterConfig } from "./Character";
 import type { ConnectionConfig } from "./Connection";
 import { CharacterStore } from "./CharacterStore";
+import { AliasStore } from "../alias/AliasStore";
 import type { CommandHistory } from "../input/CommandHistory";
 
 export class CharacterManager extends EventEmitter {
   private store: CharacterStore;
+  private aliasStore: AliasStore;
   private currentConnection: ConnectionConfig | null = null;
   private currentCharacter: CharacterConfig | null = null;
   private history: CommandHistory;
@@ -13,6 +15,7 @@ export class CharacterManager extends EventEmitter {
   constructor(history: CommandHistory) {
     super();
     this.store = new CharacterStore();
+    this.aliasStore = new AliasStore();
     this.history = history;
   }
 
@@ -129,44 +132,33 @@ export class CharacterManager extends EventEmitter {
     return result;
   }
 
-  // === Alias Methods ===
+  // === Alias Methods (Global) ===
 
   setAlias(name: string, expansion: string): boolean {
-    if (!this.currentConnection || !this.currentCharacter) {
-      return false;
-    }
-
-    this.store.setAlias(this.currentConnection.id, this.currentCharacter.id, name, expansion);
-    this.currentCharacter.aliases[name] = expansion;
+    this.aliasStore.set(name, expansion);
     this.emit("aliasSet", name, expansion);
     return true;
   }
 
   removeAlias(name: string): boolean {
-    if (!this.currentConnection || !this.currentCharacter) {
+    if (!this.aliasStore.has(name)) {
       return false;
     }
-
-    this.store.removeAlias(this.currentConnection.id, this.currentCharacter.id, name);
-    delete this.currentCharacter.aliases[name];
+    this.aliasStore.remove(name);
     this.emit("aliasRemoved", name);
     return true;
   }
 
   getAliases(): Record<string, string> {
-    return this.currentCharacter?.aliases || {};
+    return this.aliasStore.getAll();
   }
 
   expandAlias(input: string): string {
-    if (!this.currentCharacter) {
-      return input;
-    }
-
     const parts = input.split(/\s+/);
     const cmd = parts[0];
     const args = parts.slice(1);
 
-    const expansion = this.currentCharacter.aliases[cmd];
+    const expansion = this.aliasStore.get(cmd);
     if (!expansion) {
       return input;
     }
