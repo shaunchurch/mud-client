@@ -585,8 +585,17 @@ class MudClient {
     // Restore cursor and redraw input on the last line
     process.stdout.write(RESTORE_CURSOR);
 
-    // If in pane focus mode, redraw focus prompt instead of normal input
+    // If in pane focus mode, handle focus indicators
     if (this.inPaneFocus) {
+      // Check if main is focused (needs border redraw)
+      const focusablePanes = this.getFocusablePanes();
+      const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+      const mainFocused = !this.isSolo && focusedPaneId === "main";
+
+      if (mainFocused) {
+        // Redraw main with border (new content broke the border)
+        this.redrawMainWithScroll();
+      }
       this.redrawPaneFocus();
     } else {
       this.redrawInput();
