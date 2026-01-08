@@ -89,6 +89,7 @@ class MudClient {
   private focusedPaneIndex = 0;
   private savedPaneStates: Map<string, boolean> = new Map(); // For solo/restore
   private mainScrollOffset = 0; // Scroll offset for main output history
+  private mainHasNewContent = false; // New content arrived while main is scrolled
   private isSolo = false; // Track if currently in solo mode
 
   constructor() {
@@ -585,8 +586,17 @@ class MudClient {
       this.outputHistory = this.outputHistory.slice(-this.maxOutputHistory);
     }
 
+    // Check if main is scrolled (in focus mode) - if so, lock the view
+    const mainIsScrolled = this.inPaneFocus && this.mainScrollOffset > 0;
+    if (mainIsScrolled && mainLines.length > 0) {
+      // Lock view by incrementing scroll offset
+      this.mainScrollOffset += mainLines.length;
+      this.mainHasNewContent = true;
+    }
+
     // Write main output only - let terminal handle scrolling within the region
-    if (mainLines.length > 0) {
+    // But skip if scrolled - we'll redraw with the locked position instead
+    if (mainLines.length > 0 && !mainIsScrolled) {
       // Position cursor to scroll region bottom (pane rendering may have moved it)
       process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
       // Restore previous color state before writing main output
@@ -1308,6 +1318,7 @@ class MudClient {
     }
     this.savedPaneStates.clear();
     this.mainScrollOffset = 0;
+    this.mainHasNewContent = false;
 
     this.refreshScreen();
     this.redrawInput();
@@ -1431,6 +1442,10 @@ class MudClient {
         this.mainScrollOffset = Math.min(maxScroll, this.mainScrollOffset + scrollAmount);
       } else {
         this.mainScrollOffset = Math.max(0, this.mainScrollOffset - scrollAmount);
+        // Clear new content indicator when reaching bottom
+        if (this.mainScrollOffset === 0) {
+          this.mainHasNewContent = false;
+        }
       }
       this.redrawMainWithScroll();
     } else {
@@ -1509,6 +1524,14 @@ class MudClient {
         }
         process.stdout.write(text);
       }
+    }
+
+    // Show new content indicator at bottom-right when scrolled with new content
+    if (this.mainHasNewContent && this.mainScrollOffset > 0) {
+      const indicator = "\x1b[38;5;242m↓new\x1b[0m"; // Dark grey
+      const indicatorLen = 4; // "↓new"
+      const indicatorCol = termWidth - indicatorLen;
+      process.stdout.write(CURSOR_TO(mainScrollBottom, indicatorCol) + indicator);
     }
   }
 
