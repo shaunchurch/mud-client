@@ -1,6 +1,4 @@
 import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { TelnetClient } from "../connection/TelnetClient";
 import { CommandHistory } from "../input/CommandHistory";
 import { TabCompletion } from "../input/TabCompletion";
@@ -10,6 +8,9 @@ import type { CharacterConfig } from "../character/Character";
 import { Menu, type MenuItem } from "./Menu";
 import { TextPrompt } from "./TextPrompt";
 import { SettingsManager } from "../settings/Settings";
+import { PaneManager } from "../panes/PaneManager";
+import { PaneConfigStore } from "../panes/PaneConfigStore";
+import { MessageClassifier } from "../messages/MessageClassifier";
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -34,6 +35,14 @@ class MudClient {
   private settings: SettingsManager;
   private menu: Menu;
   private prompt: TextPrompt;
+  private paneConfig: PaneConfigStore;
+  private paneManager: PaneManager;
+  private classifier: MessageClassifier;
+
+  // Total height of all enabled panes (0 if none enabled)
+  private get totalPaneHeight(): number {
+    return this.paneManager.getTotalHeight();
+  }
 
   private input = "";
   private cursorPos = 0;
@@ -48,6 +57,10 @@ class MudClient {
   private outputBuffer = "";
   private outputTimer: ReturnType<typeof setTimeout> | null = null;
   private lastColorState = ""; // Track last SGR sequence for color continuity
+
+  // Main output history for resize redraw
+  private outputHistory: string[] = [];
+  private maxOutputHistory = 500; // Keep last N lines
 
   // Waiting for user to acknowledge disconnect
   private waitingForDisconnectAck = false;
@@ -71,6 +84,13 @@ class MudClient {
   private lastConnection: ConnectionConfig | null = null;
   private lastCharacter: CharacterConfig | null = null;
 
+  // Pane focus mode
+  private inPaneFocus = false;
+  private focusedPaneIndex = 0;
+  private savedPaneStates: Map<string, boolean> = new Map(); // For solo/restore
+  private mainScrollOffset = 0; // Scroll offset for main output history
+  private isSolo = false; // Track if currently in solo mode
+
   constructor() {
     this.client = new TelnetClient();
     this.history = new CommandHistory();
@@ -79,6 +99,9 @@ class MudClient {
     this.settings = new SettingsManager();
     this.menu = new Menu();
     this.prompt = new TextPrompt();
+    this.paneConfig = new PaneConfigStore();
+    this.paneManager = new PaneManager(this.paneConfig.getPanes());
+    this.classifier = new MessageClassifier(this.paneConfig.getClassifiers());
 
     this.setupTelnet();
     this.setupInput();
@@ -90,8 +113,35 @@ class MudClient {
       if (this.appState === "client") {
         // Recalculate input line count for new terminal width
         this.inputLineCount = this.calculateInputLineCount();
-        // Re-establish scroll region with new terminal size
+
+        const termHeight = process.stdout.rows || 24;
+        const panelHeight = this.totalPaneHeight;
+        const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
+        const reservedLines = this.inputLineCount + 1; // +1 for divider
+        const mainScrollBottom = termHeight - reservedLines;
+        const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+        // Clear entire screen and reset
+        process.stdout.write(RESET_SCROLL_REGION);
+        process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+
+        // Re-establish scroll region
         this.setupScrollRegion();
+
+        // Redraw main output from history (last N lines that fit)
+        const linesToShow = this.outputHistory.slice(-scrollHeight);
+        if (linesToShow.length > 0) {
+          process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+          for (const line of linesToShow) {
+            process.stdout.write(line + "\n");
+          }
+        }
+
+        // Redraw panes
+        if (panelHeight > 0) {
+          this.paneManager.layoutPanes(1);
+          this.paneManager.renderAll();
+        }
         this.redrawInput();
       }
     });
@@ -380,12 +430,26 @@ class MudClient {
 
   private setupScrollRegion(): void {
     const termHeight = process.stdout.rows || 24;
-    // Set scroll region to all but the last N+1 lines (divider + input lines)
-    // Divider is outside scroll region and won't scroll
+    const panelHeight = this.totalPaneHeight;
+    // Layout (panes at top if enabled):
+    //   Row 1 to panelHeight: stacked panes (if enabled)
+    //   Row panelHeight+1: divider below panes (if enabled)
+    //   Row panelHeight+2 to termHeight-N-1: main output (scroll region)
+    //   Row termHeight-N: divider above input
+    //   Row termHeight-N+1 to termHeight: input lines (N lines)
+    // When panes disabled (height=0): scroll region starts at row 1
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const reservedLines = this.inputLineCount + 1; // +1 for divider
-    process.stdout.write(SET_SCROLL_REGION(1, termHeight - reservedLines));
+    const mainScrollBottom = termHeight - reservedLines;
+
+    // Set scroll region for main output
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     // Move cursor to top of scroll region
-    process.stdout.write(CURSOR_HOME);
+    process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+    // Layout panes (top of terminal)
+    if (panelHeight > 0) {
+      this.paneManager.layoutPanes(1);
+    }
   }
 
   private resetScrollRegion(): void {
@@ -456,28 +520,19 @@ class MudClient {
     }
 
     const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const reservedLines = this.inputLineCount + 1; // +1 for divider
-    const scrollBottom = termHeight - reservedLines;
+    const mainScrollBottom = termHeight - reservedLines;
 
     // Ensure scroll region is correct (defensive - prevents drift)
-    process.stdout.write(SET_SCROLL_REGION(1, scrollBottom));
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
 
-    // Save cursor, move to scroll region, output, restore cursor
+    // Save cursor position for later restoration
     process.stdout.write(SAVE_CURSOR);
-
-    // Move to bottom of scroll region
-    process.stdout.write(CURSOR_TO(scrollBottom, 1));
-
-    // Scroll first by writing a newline, so new content appears below existing
-    process.stdout.write("\n");
 
     // Strip trailing newlines since we handle scrolling ourselves
     toFlush = toFlush.replace(/\n+$/, "");
-
-    // Restore previous color state before writing
-    if (this.lastColorState) {
-      process.stdout.write(this.lastColorState);
-    }
 
     // Strip bare CR characters - they cause display corruption with scroll regions
     // (CRLF has already been normalized to LF by TelnetClient)
@@ -499,8 +554,48 @@ class MudClient {
       this.debugLogStream.write(`---\n`);
     }
 
-    // Write output - let terminal handle scrolling within the region
-    process.stdout.write(toFlush);
+    // Classify and route lines
+    const lines = toFlush.split("\n");
+    const mainLines: string[] = [];
+    const panesEnabled = this.totalPaneHeight > 0;
+
+    for (const line of lines) {
+      if (line.length === 0) continue;
+
+      // Route to panes if any are enabled
+      if (panesEnabled) {
+        // Strip ANSI codes for classification only
+        const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+        const classified = this.classifier.classify(stripped);
+
+        // Route to matching panes - if consumed, skip main output
+        if (this.paneManager.route(line, classified)) {
+          continue;
+        }
+      }
+
+      // Keep for main output
+      mainLines.push(line);
+    }
+
+    // Store main lines in history for resize redraw
+    this.outputHistory.push(...mainLines);
+    // Trim to max history
+    if (this.outputHistory.length > this.maxOutputHistory) {
+      this.outputHistory = this.outputHistory.slice(-this.maxOutputHistory);
+    }
+
+    // Write main output only - let terminal handle scrolling within the region
+    if (mainLines.length > 0) {
+      // Position cursor to scroll region bottom (pane rendering may have moved it)
+      process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
+      // Restore previous color state before writing main output
+      if (this.lastColorState) {
+        process.stdout.write(this.lastColorState);
+      }
+      // Scroll and write content - leading newline scrolls region
+      process.stdout.write("\n" + mainLines.join("\n"));
+    }
 
     // Extract and save last SGR (color) sequence for next flush
     const sgrMatches = toFlush.match(/\x1b\[[0-9;]*m/g);
@@ -510,7 +605,22 @@ class MudClient {
 
     // Restore cursor and redraw input on the last line
     process.stdout.write(RESTORE_CURSOR);
-    this.redrawInput();
+
+    // If in pane focus mode, handle focus indicators
+    if (this.inPaneFocus) {
+      // Check if main is focused (needs border redraw)
+      const focusablePanes = this.getFocusablePanes();
+      const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+      const mainFocused = !this.isSolo && focusedPaneId === "main";
+
+      if (mainFocused) {
+        // Redraw main with border (new content broke the border)
+        this.redrawMainWithScroll();
+      }
+      this.redrawPaneFocus();
+    } else {
+      this.redrawInput();
+    }
   }
 
   private addTimestamps(text: string, mode: "time" | "datetime"): string {
@@ -760,6 +870,18 @@ class MudClient {
       return;
     }
 
+    // Handle pane focus mode
+    if (this.inPaneFocus) {
+      this.handlePaneFocusKey(key);
+      return;
+    }
+
+    // Escape - enter pane focus mode (always available to solo main)
+    if (key === "\x1b") {
+      this.enterPaneFocus();
+      return;
+    }
+
     const code = key.charCodeAt(0);
 
     // Ctrl+R - enter reverse search
@@ -874,8 +996,13 @@ class MudClient {
       return;
     }
 
-    // Tab - completion
+    // Tab - enter pane focus if input empty, otherwise completion
     if (key === "\t") {
+      if (this.input === "") {
+        this.enterPaneFocus();
+        return;
+      }
+
       this.inputSelected = false;
 
       // Special case: "/set [key]" - cycle through setting keys
@@ -1057,16 +1184,10 @@ class MudClient {
       this.cursorPos = this.input.length;
 
       if (execute && this.input) {
-        if (this.input.trim()) {
-          this.echoCommand(this.input);
-        }
+        process.stdout.write("\r\n");
         this.handleCommand(this.input);
-        if (this.settings.get("inputMode") === "clear") {
-          this.clearInput();
-        } else {
-          this.inputSelected = true;
-          this.cursorPos = this.input.length;
-        }
+        this.input = "";
+        this.cursorPos = 0;
       }
     } else {
       this.input = this.savedInput;
@@ -1142,6 +1263,347 @@ class MudClient {
     process.stdout.write(CLEAR_LINE + "\r" + line);
   }
 
+  // Pane focus mode - Escape to enter, Tab to cycle, s to solo, scroll with Ctrl+U/D
+  // "main" is always included as a virtual pane representing the main output area
+  // Escape/Enter exits AND restores layout
+
+  private getFocusablePanes(): string[] {
+    // Always include "main" plus any enabled panes
+    return ["main", ...this.paneManager.getEnabledPaneIds()];
+  }
+
+  private enterPaneFocus(): void {
+    // Save pane states on entering focus mode
+    this.savedPaneStates.clear();
+    for (const status of this.paneManager.getPaneStatus()) {
+      this.savedPaneStates.set(status.id, status.enabled);
+    }
+
+    this.inPaneFocus = true;
+    this.focusedPaneIndex = 0; // Start on "main"
+    this.mainScrollOffset = 0;
+    this.updatePaneFocusIndicators();
+    this.redrawPaneFocus();
+  }
+
+  private exitPaneFocus(): void {
+    this.inPaneFocus = false;
+    this.isSolo = false;
+
+    // Clear focus indicators
+    this.clearPaneFocusIndicators();
+
+    // Restore pane states and heights on exit
+    for (const [paneId, enabled] of this.savedPaneStates) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.restoreOriginalHeight();
+        pane.resetScroll();
+      }
+      if (enabled) {
+        this.paneManager.enablePane(paneId);
+      } else {
+        this.paneManager.disablePane(paneId);
+      }
+    }
+    this.savedPaneStates.clear();
+    this.mainScrollOffset = 0;
+
+    this.refreshScreen();
+    this.redrawInput();
+  }
+
+  private updatePaneFocusIndicators(): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+
+    // Update focus state on all panes (no border when solo'd)
+    for (const paneId of this.paneManager.getPaneIds()) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.setFocused(!this.isSolo && paneId === focusedPaneId);
+      }
+    }
+
+    // Re-render panes to show/clear focus indicator
+    this.paneManager.renderAll();
+
+    // Always redraw main to show/clear border when in focus mode
+    if (this.inPaneFocus && !this.isSolo) {
+      this.redrawMainWithScroll();
+    }
+  }
+
+  private clearPaneFocusIndicators(): void {
+    for (const paneId of this.paneManager.getPaneIds()) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.setFocused(false);
+      }
+    }
+  }
+
+  private handlePaneFocusKey(key: string): void {
+    const focusablePanes = this.getFocusablePanes();
+
+    // Escape or Enter - exit focus mode (restores layout)
+    if (key === "\x1b" || key === "\r" || key === "\n") {
+      this.exitPaneFocus();
+      return;
+    }
+
+    // Tab - cycle to next pane
+    if (key === "\t") {
+      this.focusedPaneIndex = (this.focusedPaneIndex + 1) % focusablePanes.length;
+      this.updatePaneFocusIndicators();
+      this.redrawPaneFocus();
+      return;
+    }
+
+    // Shift+Tab (ESC [ Z) - cycle to previous pane
+    if (key === "\x1b[Z") {
+      this.focusedPaneIndex = (this.focusedPaneIndex - 1 + focusablePanes.length) % focusablePanes.length;
+      this.updatePaneFocusIndicators();
+      this.redrawPaneFocus();
+      return;
+    }
+
+    // 's' - toggle solo (solo if not solo'd, unsolo if already solo'd)
+    if (key === "s" || key === "S") {
+      if (this.isSolo) {
+        this.unsoloPanes();
+      } else {
+        this.soloPaneFocused();
+      }
+      return;
+    }
+
+    // Ctrl+U - scroll up half page
+    if (key === "\x15") {
+      this.scrollFocusedPane("up");
+      return;
+    }
+
+    // Ctrl+D - scroll down half page
+    if (key === "\x04") {
+      this.scrollFocusedPane("down");
+      return;
+    }
+
+    // Arrow up - scroll up one line
+    if (key === "\x1b[A") {
+      this.scrollFocusedPane("up", 1);
+      return;
+    }
+
+    // Arrow down - scroll down one line
+    if (key === "\x1b[B") {
+      this.scrollFocusedPane("down", 1);
+      return;
+    }
+
+    // + or = - grow pane height
+    if (key === "+" || key === "=") {
+      this.resizeFocusedPane(1);
+      return;
+    }
+
+    // - - shrink pane height
+    if (key === "-") {
+      this.resizeFocusedPane(-1);
+      return;
+    }
+
+    // Ignore all other input (can't type in focus mode)
+  }
+
+  private scrollFocusedPane(direction: "up" | "down", lines?: number): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+    const termHeight = process.stdout.rows || 24;
+    const halfPage = Math.floor(termHeight / 2);
+    const scrollAmount = lines ?? halfPage;
+
+    if (focusedPaneId === "main") {
+      // Scroll main output history
+      const maxScroll = Math.max(0, this.outputHistory.length - (termHeight - this.totalPaneHeight - 3));
+      if (direction === "up") {
+        this.mainScrollOffset = Math.min(maxScroll, this.mainScrollOffset + scrollAmount);
+      } else {
+        this.mainScrollOffset = Math.max(0, this.mainScrollOffset - scrollAmount);
+      }
+      this.redrawMainWithScroll();
+    } else {
+      // Scroll the pane
+      const pane = this.paneManager.getPane(focusedPaneId);
+      if (pane) {
+        if (direction === "up") {
+          pane.scrollUp(scrollAmount);
+        } else {
+          pane.scrollDown(scrollAmount);
+        }
+        pane.render();
+      }
+    }
+    this.redrawPaneFocus();
+  }
+
+  private resizeFocusedPane(delta: number): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+
+    // Can't resize main pane
+    if (focusedPaneId === "main") {
+      return;
+    }
+
+    const pane = this.paneManager.getPane(focusedPaneId);
+    if (!pane) return;
+
+    const currentHeight = pane.getOriginalHeight();
+    const newHeight = Math.max(1, Math.min(50, currentHeight + delta));
+
+    if (newHeight !== currentHeight) {
+      pane.setOriginalHeight(newHeight);
+      this.paneConfig.setPaneHeight(focusedPaneId, newHeight);
+      this.refreshScreen();
+      this.updatePaneFocusIndicators();
+      this.redrawPaneFocus();
+    }
+  }
+
+  private redrawMainWithScroll(): void {
+    const termHeight = process.stdout.rows || 24;
+    const termWidth = process.stdout.columns || 80;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
+    const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+    // Check if main is focused (no border when solo'd)
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+    const mainFocused = this.inPaneFocus && !this.isSolo && focusedPaneId === "main";
+    const borderChar = mainFocused ? "\x1b[33m│\x1b[0m" : "";
+    const borderWidth = mainFocused ? 1 : 0;
+
+    // Calculate visible portion with scroll offset
+    const endIndex = this.outputHistory.length - this.mainScrollOffset;
+    const startIndex = Math.max(0, endIndex - scrollHeight);
+    const visible = this.outputHistory.slice(startIndex, endIndex);
+
+    // Clear and redraw main area
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
+    for (let i = 0; i < scrollHeight; i++) {
+      const row = mainScrollTop + i;
+      process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE + borderChar);
+      if (i < visible.length) {
+        let text = visible[i];
+        // Truncate if needed to fit with border
+        if (borderWidth > 0) {
+          const visibleLen = text.replace(/\x1b\[[0-9;]*m/g, "").length;
+          if (visibleLen > termWidth - borderWidth) {
+            text = text.slice(0, termWidth - borderWidth - 3) + "...";
+          }
+        }
+        process.stdout.write(text);
+      }
+    }
+  }
+
+  private soloPaneFocused(): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+
+    if (focusedPaneId === "main") {
+      // Solo main = disable all panes (main output gets full screen)
+      for (const paneId of this.paneManager.getPaneIds()) {
+        this.paneManager.disablePane(paneId);
+      }
+    } else {
+      // Solo a specific pane = expand it to full height
+      const termHeight = process.stdout.rows || 24;
+      const reservedLines = this.inputLineCount + 1; // +1 for divider
+      const fullHeight = termHeight - reservedLines; // Leave room for divider + input
+
+      // Expand the focused pane to full height
+      const pane = this.paneManager.getPane(focusedPaneId);
+      if (pane) {
+        pane.setHeight(fullHeight);
+      }
+
+      // Disable all other panes
+      for (const paneId of this.paneManager.getPaneIds()) {
+        if (paneId !== focusedPaneId) {
+          this.paneManager.disablePane(paneId);
+        }
+      }
+
+      // Keep focus on the solo'd pane (find its new index)
+      const newFocusablePanes = this.getFocusablePanes();
+      this.focusedPaneIndex = newFocusablePanes.indexOf(focusedPaneId);
+      if (this.focusedPaneIndex === -1) this.focusedPaneIndex = 0;
+    }
+
+    this.isSolo = true;
+    this.refreshScreen();
+    this.updatePaneFocusIndicators();
+    this.redrawPaneFocus();
+  }
+
+  private unsoloPanes(): void {
+    // Remember which pane was focused before restoring
+    const focusablePanes = this.getFocusablePanes();
+    const currentFocusedId = focusablePanes[this.focusedPaneIndex];
+
+    // Restore pane states and heights (but stay in focus mode)
+    for (const [paneId, enabled] of this.savedPaneStates) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.restoreOriginalHeight();
+      }
+      if (enabled) {
+        this.paneManager.enablePane(paneId);
+      } else {
+        this.paneManager.disablePane(paneId);
+      }
+    }
+
+    this.isSolo = false;
+
+    // Keep focus on the same pane after restore
+    const newFocusablePanes = this.getFocusablePanes();
+    this.focusedPaneIndex = newFocusablePanes.indexOf(currentFocusedId);
+    if (this.focusedPaneIndex === -1) this.focusedPaneIndex = 0;
+
+    this.refreshScreen();
+    this.updatePaneFocusIndicators();
+    this.redrawPaneFocus();
+  }
+
+  private redrawPaneFocus(): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPane = focusablePanes[this.focusedPaneIndex] || "main";
+
+    // Build scroll indicator
+    let scrollInfo = "";
+    if (focusedPane === "main") {
+      if (this.mainScrollOffset > 0) {
+        scrollInfo = ` [↑${this.mainScrollOffset}]`;
+      }
+    } else {
+      const pane = this.paneManager.getPane(focusedPane);
+      if (pane && pane.getScrollOffset() > 0) {
+        scrollInfo = ` [↑${pane.getScrollOffset()}]`;
+      }
+    }
+
+    const line = `\x1b[33m[PANE]\x1b[0m ${focusedPane}${scrollInfo} (Tab, s=solo, Ctrl+U/D=scroll, Esc=exit)`;
+    const termHeight = process.stdout.rows || 24;
+    process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE + line);
+  }
+
   private handleCommand(cmd: string): void {
     const trimmed = cmd.trim();
 
@@ -1186,13 +1648,16 @@ class MudClient {
       } else if (command === "alias" && parts[1] && parts[2]) {
         const name = parts[1];
         const expansion = parts.slice(2).join(" ");
-        this.charManager.setAlias(name, expansion);
-        this.echo(`Alias set: ${name} = ${expansion}`);
+        if (this.charManager.setAlias(name, expansion)) {
+          this.echo(`Alias set: ${name} = ${expansion}`);
+        } else {
+          this.echo("No character selected.");
+        }
       } else if (command === "unalias" && parts[1]) {
         if (this.charManager.removeAlias(parts[1])) {
           this.echo(`Alias removed: ${parts[1]}`);
         } else {
-          this.echo("Alias not found.");
+          this.echo("No character selected or alias not found.");
         }
       } else if (command === "aliases") {
         const aliases = this.charManager.getAliases();
@@ -1226,6 +1691,14 @@ class MudClient {
         this.echo("  Up/Down - Navigate history");
         this.echo("  Ctrl+L - Clear screen");
         this.echo("  Ctrl+C - Disconnect (or exit if disconnected)");
+        this.echo("  Escape - Enter pane focus mode");
+        this.echo("");
+        this.echo("Pane focus mode:");
+        this.echo("  Tab - Cycle between main and panes");
+        this.echo("  s - Solo focused pane (expand to full screen)");
+        this.echo("  Ctrl+U/D - Scroll up/down half page");
+        this.echo("  Up/Down - Scroll one line");
+        this.echo("  Escape/Enter - Exit and restore layout");
         this.echo("");
         this.echo("Movement (Shift+key, roguelike layout):");
         this.echo("  H/L/K/J - West/East/North/South");
@@ -1245,7 +1718,7 @@ class MudClient {
       } else if (command === "debug") {
         this.debugMode = !this.debugMode;
         if (this.debugMode) {
-          const logPath = path.join(os.tmpdir(), "mud-client-debug.log");
+          const logPath = "/tmp/mud-client-debug.log";
           this.debugLogStream = fs.createWriteStream(logPath, { flags: "a" });
           this.debugLogStream.write(`\n=== Debug session started: ${new Date().toISOString()} ===\n`);
           this.client.setDebug(true, this.debugLogStream);
@@ -1278,11 +1751,100 @@ class MudClient {
         } else if (this.settings.set(key as keyof import("../settings/Settings").AppSettings, value)) {
           this.echo(`Setting updated: ${key} = ${value}`);
           this.updatePrompt();
-          this.redrawInput();
+          this.refreshScreen();
         } else {
           const validValues = this.settings.getValidValues(key);
           this.echo(`Invalid value: ${value}`);
           this.echo(`Valid values: ${validValues.join(", ")}`);
+        }
+      } else if (command === "pane" || command === "panes") {
+        const paneId = parts[1];
+        const action = parts[2];
+
+        if (!paneId) {
+          // List all panes and their status
+          const status = this.paneManager.getPaneStatus();
+          if (status.length === 0) {
+            this.echo("No panes configured. Edit ~/.config/mud-client/panes.yaml");
+          } else {
+            this.echo("Panes:");
+            for (const s of status) {
+              const pane = this.paneManager.getPane(s.id);
+              const state = s.enabled ? "enabled" : "disabled";
+              const height = pane?.getOriginalHeight() ?? "?";
+              const passthrough = pane?.getPassthrough() ? "yes" : "no";
+              this.echo(`  ${s.id}: ${state}, height=${height}, passthrough=${passthrough}`);
+            }
+            this.echo("");
+            this.echo("Usage: /pane <id> enable|disable|set");
+          }
+        } else if (action === "enable" || action === "enabled") {
+          if (this.paneManager.enablePane(paneId)) {
+            this.paneConfig.setPaneEnabled(paneId, true);
+            this.echo(`Pane '${paneId}' enabled`);
+            this.refreshScreen();
+          } else {
+            this.echo(`Unknown pane: ${paneId}`);
+          }
+        } else if (action === "disable" || action === "disabled") {
+          if (this.paneManager.disablePane(paneId)) {
+            this.paneConfig.setPaneEnabled(paneId, false);
+            this.echo(`Pane '${paneId}' disabled`);
+            this.refreshScreen();
+          } else {
+            this.echo(`Unknown pane: ${paneId}`);
+          }
+        } else if (action === "set") {
+          const setting = parts[3];
+          const value = parts[4];
+          const pane = this.paneManager.getPane(paneId);
+
+          if (!pane) {
+            this.echo(`Unknown pane: ${paneId}`);
+          } else if (!setting) {
+            // Show current settings
+            this.echo(`Pane '${paneId}' settings:`);
+            this.echo(`  height = ${pane.getOriginalHeight()}`);
+            this.echo(`  passthrough = ${pane.getPassthrough()}`);
+            this.echo(`  maxMessages = ${pane.getMaxMessages()}`);
+            this.echo("");
+            this.echo("Usage: /pane <id> set <setting> <value>");
+          } else if (setting === "height") {
+            const num = parseInt(value, 10);
+            if (isNaN(num) || num < 1 || num > 50) {
+              this.echo("Invalid height. Must be a number between 1 and 50.");
+            } else {
+              pane.setOriginalHeight(num);
+              this.paneConfig.setPaneHeight(paneId, num);
+              this.echo(`Pane '${paneId}' height set to ${num}`);
+              this.refreshScreen();
+            }
+          } else if (setting === "passthrough") {
+            if (value !== "true" && value !== "false") {
+              this.echo("Invalid value. Must be 'true' or 'false'.");
+            } else {
+              const bool = value === "true";
+              pane.setPassthrough(bool);
+              this.paneConfig.setPanePassthrough(paneId, bool);
+              this.echo(`Pane '${paneId}' passthrough set to ${bool}`);
+            }
+          } else if (setting === "maxMessages") {
+            const num = parseInt(value, 10);
+            if (isNaN(num) || num < 10 || num > 10000) {
+              this.echo("Invalid maxMessages. Must be a number between 10 and 10000.");
+            } else {
+              pane.setMaxMessages(num);
+              this.paneConfig.setPaneMaxMessages(paneId, num);
+              this.echo(`Pane '${paneId}' maxMessages set to ${num}`);
+            }
+          } else {
+            this.echo(`Unknown setting: ${setting}`);
+            this.echo("Available settings: height, passthrough, maxMessages");
+          }
+        } else {
+          this.echo("Usage: /pane <id> enable|disable");
+          this.echo("       /pane <id> set <setting> <value>");
+          this.echo("       /panes - list all panes");
         }
       } else {
         this.echo(`Unknown command: ${command}`);
@@ -1305,11 +1867,13 @@ class MudClient {
   private echoCommand(cmd: string): void {
     if (!this.settings.get("echoCommands")) return;
     const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const reservedLines = this.inputLineCount + 1; // +1 for divider
-    const scrollBottom = termHeight - reservedLines;
-    process.stdout.write(SET_SCROLL_REGION(1, scrollBottom));
+    const mainScrollBottom = termHeight - reservedLines;
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
-    process.stdout.write(CURSOR_TO(scrollBottom, 1));
+    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
     process.stdout.write("\n"); // Scroll first
     process.stdout.write("\x1b[90m> " + cmd + "\x1b[0m"); // Dark grey
     process.stdout.write(RESTORE_CURSOR);
@@ -1342,6 +1906,7 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
+    const totalPaneHeight = this.totalPaneHeight;
 
     // Calculate how many lines we need for the input
     const newLineCount = this.calculateInputLineCount();
@@ -1360,15 +1925,29 @@ class MudClient {
 
       this.inputLineCount = newLineCount;
       // Re-setup scroll region with new reserved space
+      const mainScrollTop = totalPaneHeight > 0 ? totalPaneHeight + 2 : 1;
       const reservedLines = this.inputLineCount + 1; // +1 for divider
-      process.stdout.write(SET_SCROLL_REGION(1, termHeight - reservedLines));
+      process.stdout.write(SET_SCROLL_REGION(mainScrollTop, termHeight - reservedLines));
     }
 
     const firstLineWidth = termWidth - this.promptText.length;
     const dividerRow = termHeight - this.inputLineCount;
     const inputStartRow = dividerRow + 1;
 
-    // Draw thin dark grey divider line
+    // Layout rows (panes at top if enabled)
+    if (totalPaneHeight > 0) {
+      const upperDividerRow = totalPaneHeight + 1;  // Below panes
+
+      // Layout and render all panes at top
+      this.paneManager.layoutPanes(1);
+      this.paneManager.renderAll();
+
+      // Draw upper divider (between panes and main output)
+      process.stdout.write(CURSOR_TO(upperDividerRow, 1));
+      process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
+    }
+
+    // Draw lower divider (between main output and input)
     process.stdout.write(CURSOR_TO(dividerRow, 1));
     process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
 
@@ -1424,8 +2003,10 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const reservedLines = this.inputLineCount + 1; // +1 for divider
-    const scrollBottom = termHeight - reservedLines;
+    const mainScrollBottom = termHeight - reservedLines;
     const prefix = "\x1b[36m[Client]\x1b[0m ";
     const prefixLen = 10; // "[Client] " visible length
     const availableWidth = termWidth - prefixLen;
@@ -1434,9 +2015,9 @@ class MudClient {
     const lines = this.wordWrap(message, availableWidth);
 
     // Ensure scroll region is set, save cursor, move to scroll region bottom
-    process.stdout.write(SET_SCROLL_REGION(1, scrollBottom));
+    process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
-    process.stdout.write(CURSOR_TO(scrollBottom, 1));
+    process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
 
     // Print first line with prefix, continuation lines with indent
     for (let i = 0; i < lines.length; i++) {
@@ -1540,6 +2121,41 @@ class MudClient {
 
     // Default: use word buffer
     return Array.from(this.wordBuffer);
+  }
+
+  // Refresh screen after pane layout changes
+  private refreshScreen(): void {
+    if (this.appState !== "client") return;
+
+    const termHeight = process.stdout.rows || 24;
+    const panelHeight = this.totalPaneHeight;
+    const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
+    const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+    // Clear entire screen and reset
+    process.stdout.write(RESET_SCROLL_REGION);
+    process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+
+    // Re-establish scroll region
+    this.setupScrollRegion();
+
+    // Redraw main output from history (last N lines that fit)
+    const linesToShow = this.outputHistory.slice(-scrollHeight);
+    if (linesToShow.length > 0) {
+      process.stdout.write(CURSOR_TO(mainScrollTop, 1));
+      for (const line of linesToShow) {
+        process.stdout.write(line + "\n");
+      }
+    }
+
+    // Redraw panes
+    if (panelHeight > 0) {
+      this.paneManager.layoutPanes(1);
+      this.paneManager.renderAll();
+    }
+    this.redrawInput();
   }
 
   private cleanup(): void {
