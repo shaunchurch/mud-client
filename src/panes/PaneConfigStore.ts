@@ -92,4 +92,18 @@ export class PaneConfigStore {
     const content = stringify(this.getDefaults());
     writeFileSync(this.configPath, content);
   }
+
+  setPaneEnabled(id: string, enabled: boolean): boolean {
+    const pane = this.config.panes.find((p) => p.id === id);
+    if (!pane) return false;
+
+    pane.enabled = enabled;
+    this.save();
+    return true;
+  }
+
+  private save(): void {
+    const content = stringify(this.config);
+    writeFileSync(this.configPath, content);
+  }
 }

@@ -1373,6 +1373,7 @@ class MudClient {
           }
         } else if (action === "enable" || action === "enabled") {
           if (this.paneManager.enablePane(paneId)) {
+            this.paneConfig.setPaneEnabled(paneId, true);
             this.echo(`Pane '${paneId}' enabled`);
             this.refreshScreen();
           } else {
@@ -1380,6 +1381,7 @@ class MudClient {
           }
         } else if (action === "disable" || action === "disabled") {
           if (this.paneManager.disablePane(paneId)) {
+            this.paneConfig.setPaneEnabled(paneId, false);
             this.echo(`Pane '${paneId}' disabled`);
             this.refreshScreen();
           } else {
