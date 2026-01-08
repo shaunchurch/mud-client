@@ -1057,10 +1057,16 @@ class MudClient {
       this.cursorPos = this.input.length;
 
       if (execute && this.input) {
-        process.stdout.write("\r\n");
+        if (this.input.trim()) {
+          this.echoCommand(this.input);
+        }
         this.handleCommand(this.input);
-        this.input = "";
-        this.cursorPos = 0;
+        if (this.settings.get("inputMode") === "clear") {
+          this.clearInput();
+        } else {
+          this.inputSelected = true;
+          this.cursorPos = this.input.length;
+        }
       }
     } else {
       this.input = this.savedInput;
