@@ -838,8 +838,8 @@ class MudClient {
       return;
     }
 
-    // Escape - enter pane focus mode (if panes exist)
-    if (key === "\x1b" && this.paneManager.getPaneCount() > 0) {
+    // Escape - enter pane focus mode (always available to solo main)
+    if (key === "\x1b") {
       this.enterPaneFocus();
       return;
     }
@@ -1221,12 +1221,16 @@ class MudClient {
   }
 
   // Pane focus mode - Escape to enter, Tab to cycle, s to solo, Escape/Enter to exit
-  private enterPaneFocus(): void {
-    const enabledPanes = this.paneManager.getEnabledPaneIds();
-    if (enabledPanes.length === 0) return;
+  // "main" is always included as a virtual pane representing the main output area
 
+  private getFocusablePanes(): string[] {
+    // Always include "main" plus any enabled panes
+    return ["main", ...this.paneManager.getEnabledPaneIds()];
+  }
+
+  private enterPaneFocus(): void {
     this.inPaneFocus = true;
-    this.focusedPaneIndex = 0;
+    this.focusedPaneIndex = 0; // Start on "main"
     this.redrawPaneFocus();
   }
 
@@ -1236,11 +1240,7 @@ class MudClient {
   }
 
   private handlePaneFocusKey(key: string): void {
-    const enabledPanes = this.paneManager.getEnabledPaneIds();
-    if (enabledPanes.length === 0) {
-      this.exitPaneFocus();
-      return;
-    }
+    const focusablePanes = this.getFocusablePanes();
 
     // Escape or Enter - exit focus mode
     if (key === "\x1b" || key === "\r" || key === "\n") {
@@ -1250,14 +1250,14 @@ class MudClient {
 
     // Tab - cycle to next pane
     if (key === "\t") {
-      this.focusedPaneIndex = (this.focusedPaneIndex + 1) % enabledPanes.length;
+      this.focusedPaneIndex = (this.focusedPaneIndex + 1) % focusablePanes.length;
       this.redrawPaneFocus();
       return;
     }
 
     // Shift+Tab (ESC [ Z) - cycle to previous pane
     if (key === "\x1b[Z") {
-      this.focusedPaneIndex = (this.focusedPaneIndex - 1 + enabledPanes.length) % enabledPanes.length;
+      this.focusedPaneIndex = (this.focusedPaneIndex - 1 + focusablePanes.length) % focusablePanes.length;
       this.redrawPaneFocus();
       return;
     }
@@ -1276,10 +1276,8 @@ class MudClient {
   }
 
   private soloPaneFocused(): void {
-    const enabledPanes = this.paneManager.getEnabledPaneIds();
-    if (enabledPanes.length === 0) return;
-
-    const focusedPaneId = enabledPanes[this.focusedPaneIndex];
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
 
     // Save current states before solo
     this.savedPaneStates.clear();
@@ -1287,15 +1285,23 @@ class MudClient {
       this.savedPaneStates.set(status.id, status.enabled);
     }
 
-    // Disable all panes except focused
-    for (const paneId of this.paneManager.getPaneIds()) {
-      if (paneId !== focusedPaneId) {
+    if (focusedPaneId === "main") {
+      // Solo main = disable all panes
+      for (const paneId of this.paneManager.getPaneIds()) {
         this.paneManager.disablePane(paneId);
         this.paneConfig.setPaneEnabled(paneId, false);
       }
+    } else {
+      // Solo a specific pane = disable all others
+      for (const paneId of this.paneManager.getPaneIds()) {
+        if (paneId !== focusedPaneId) {
+          this.paneManager.disablePane(paneId);
+          this.paneConfig.setPaneEnabled(paneId, false);
+        }
+      }
     }
 
-    this.focusedPaneIndex = 0; // Now only one pane
+    this.focusedPaneIndex = 0; // Reset to main
     this.refreshScreen();
     this.redrawPaneFocus();
   }
@@ -1321,8 +1327,8 @@ class MudClient {
   }
 
   private redrawPaneFocus(): void {
-    const enabledPanes = this.paneManager.getEnabledPaneIds();
-    const focusedPane = enabledPanes[this.focusedPaneIndex] || "";
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPane = focusablePanes[this.focusedPaneIndex] || "main";
     const hasSaved = this.savedPaneStates.size > 0;
     const restoreHint = hasSaved ? ", r=restore" : "";
     const line = `\x1b[33m[PANE FOCUS]\x1b[0m ${focusedPane} (Tab=next, s=solo${restoreHint}, Esc=exit)`;
