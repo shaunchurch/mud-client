@@ -88,6 +88,7 @@ class MudClient {
   private focusedPaneIndex = 0;
   private savedPaneStates: Map<string, boolean> = new Map(); // For solo/restore
   private mainScrollOffset = 0; // Scroll offset for main output history
+  private isSolo = false; // Track if currently in solo mode
 
   constructor() {
     this.client = new TelnetClient();
@@ -1246,6 +1247,7 @@ class MudClient {
 
   private exitPaneFocus(): void {
     this.inPaneFocus = false;
+    this.isSolo = false;
 
     // Clear focus indicators
     this.clearPaneFocusIndicators();
@@ -1284,6 +1286,11 @@ class MudClient {
 
     // Re-render panes to show focus indicator
     this.paneManager.renderAll();
+
+    // Redraw main with border if focused
+    if (focusedPaneId === "main") {
+      this.redrawMainWithScroll();
+    }
   }
 
   private clearPaneFocusIndicators(): void {
@@ -1320,9 +1327,13 @@ class MudClient {
       return;
     }
 
-    // 's' - solo this pane (stay in focus mode)
+    // 's' - toggle solo (solo if not solo'd, unsolo if already solo'd)
     if (key === "s" || key === "S") {
-      this.soloPaneFocused();
+      if (this.isSolo) {
+        this.unsoloPanes();
+      } else {
+        this.soloPaneFocused();
+      }
       return;
     }
 
@@ -1386,10 +1397,18 @@ class MudClient {
 
   private redrawMainWithScroll(): void {
     const termHeight = process.stdout.rows || 24;
+    const termWidth = process.stdout.columns || 80;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
     const mainScrollBottom = termHeight - 2;
     const scrollHeight = mainScrollBottom - mainScrollTop + 1;
+
+    // Check if main is focused
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+    const mainFocused = this.inPaneFocus && focusedPaneId === "main";
+    const borderChar = mainFocused ? "\x1b[33m│\x1b[0m " : "";
+    const borderWidth = mainFocused ? 2 : 0;
 
     // Calculate visible portion with scroll offset
     const endIndex = this.outputHistory.length - this.mainScrollOffset;
@@ -1400,9 +1419,17 @@ class MudClient {
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     for (let i = 0; i < scrollHeight; i++) {
       const row = mainScrollTop + i;
-      process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE);
+      process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE + borderChar);
       if (i < visible.length) {
-        process.stdout.write(visible[i]);
+        let text = visible[i];
+        // Truncate if needed to fit with border
+        if (borderWidth > 0) {
+          const visibleLen = text.replace(/\x1b\[[0-9;]*m/g, "").length;
+          if (visibleLen > termWidth - borderWidth) {
+            text = text.slice(0, termWidth - borderWidth - 3) + "...";
+          }
+        }
+        process.stdout.write(text);
       }
     }
   }
@@ -1440,6 +1467,28 @@ class MudClient {
       if (this.focusedPaneIndex === -1) this.focusedPaneIndex = 0;
     }
 
+    this.isSolo = true;
+    this.refreshScreen();
+    this.updatePaneFocusIndicators();
+    this.redrawPaneFocus();
+  }
+
+  private unsoloPanes(): void {
+    // Restore pane states and heights (but stay in focus mode)
+    for (const [paneId, enabled] of this.savedPaneStates) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.restoreOriginalHeight();
+      }
+      if (enabled) {
+        this.paneManager.enablePane(paneId);
+      } else {
+        this.paneManager.disablePane(paneId);
+      }
+    }
+
+    this.isSolo = false;
+    this.focusedPaneIndex = 0; // Back to main
     this.refreshScreen();
     this.updatePaneFocusIndicators();
     this.redrawPaneFocus();
