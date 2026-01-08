@@ -1240,11 +1240,15 @@ class MudClient {
     this.inPaneFocus = true;
     this.focusedPaneIndex = 0; // Start on "main"
     this.mainScrollOffset = 0;
+    this.updatePaneFocusIndicators();
     this.redrawPaneFocus();
   }
 
   private exitPaneFocus(): void {
     this.inPaneFocus = false;
+
+    // Clear focus indicators
+    this.clearPaneFocusIndicators();
 
     // Restore pane states and heights on exit
     for (const [paneId, enabled] of this.savedPaneStates) {
@@ -1266,6 +1270,31 @@ class MudClient {
     this.redrawInput();
   }
 
+  private updatePaneFocusIndicators(): void {
+    const focusablePanes = this.getFocusablePanes();
+    const focusedPaneId = focusablePanes[this.focusedPaneIndex];
+
+    // Update focus state on all panes
+    for (const paneId of this.paneManager.getPaneIds()) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.setFocused(paneId === focusedPaneId);
+      }
+    }
+
+    // Re-render panes to show focus indicator
+    this.paneManager.renderAll();
+  }
+
+  private clearPaneFocusIndicators(): void {
+    for (const paneId of this.paneManager.getPaneIds()) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.setFocused(false);
+      }
+    }
+  }
+
   private handlePaneFocusKey(key: string): void {
     const focusablePanes = this.getFocusablePanes();
 
@@ -1278,6 +1307,7 @@ class MudClient {
     // Tab - cycle to next pane
     if (key === "\t") {
       this.focusedPaneIndex = (this.focusedPaneIndex + 1) % focusablePanes.length;
+      this.updatePaneFocusIndicators();
       this.redrawPaneFocus();
       return;
     }
@@ -1285,6 +1315,7 @@ class MudClient {
     // Shift+Tab (ESC [ Z) - cycle to previous pane
     if (key === "\x1b[Z") {
       this.focusedPaneIndex = (this.focusedPaneIndex - 1 + focusablePanes.length) % focusablePanes.length;
+      this.updatePaneFocusIndicators();
       this.redrawPaneFocus();
       return;
     }
@@ -1410,6 +1441,7 @@ class MudClient {
     }
 
     this.refreshScreen();
+    this.updatePaneFocusIndicators();
     this.redrawPaneFocus();
   }
 

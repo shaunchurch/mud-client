@@ -21,6 +21,7 @@ export class Pane {
   readonly filter: PaneFilter;
   readonly passthrough: boolean;
   private _enabled: boolean;
+  private _focused: boolean = false;
   private messages: PaneMessage[] = [];
   private maxMessages: number;
   private height: number;
@@ -44,6 +45,14 @@ export class Pane {
 
   setEnabled(enabled: boolean): void {
     this._enabled = enabled;
+  }
+
+  get focused(): boolean {
+    return this._focused;
+  }
+
+  setFocused(focused: boolean): void {
+    this._focused = focused;
   }
 
   accepts(classified: ClassifiedMessage): boolean {
@@ -154,10 +163,18 @@ export class Pane {
     const visible = this.messages.slice(startIndex, endIndex);
     const startRow = this.topRow + (this.height - visible.length);
 
+    // Focus indicator: yellow left border
+    const borderChar = this._focused ? "\x1b[33m│\x1b[0m " : "";
+    const borderWidth = this._focused ? 2 : 0;
+    const contentWidth = termWidth - borderWidth;
+
     // Clear all lines in pane
     for (let i = 0; i < this.height; i++) {
       const row = this.topRow + i;
       process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE);
+      if (this._focused) {
+        process.stdout.write(borderChar);
+      }
     }
 
     // Write visible messages (bottom-aligned)
@@ -167,11 +184,11 @@ export class Pane {
 
       let text = msg.text;
       const visibleLen = text.replace(/\x1b\[[0-9;]*m/g, "").length;
-      if (visibleLen > termWidth) {
-        text = text.slice(0, termWidth - 3) + "...";
+      if (visibleLen > contentWidth) {
+        text = text.slice(0, contentWidth - 3) + "...";
       }
 
-      process.stdout.write(CURSOR_TO(row, 1) + text);
+      process.stdout.write(CURSOR_TO(row, 1) + borderChar + text);
     }
   }
 
