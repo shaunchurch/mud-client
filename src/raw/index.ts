@@ -50,6 +50,7 @@ class MudClient {
   private wordBuffer: Set<string> = new Set();
   private connected = false;
   private promptText = "> ";
+  private inputLineCount = 1; // Number of lines the input currently occupies
   private appState: AppState = "menu";
 
   // Output buffering to avoid display corruption
@@ -110,10 +111,14 @@ class MudClient {
   private setupResizeHandler(): void {
     process.stdout.on("resize", () => {
       if (this.appState === "client") {
+        // Recalculate input line count for new terminal width
+        this.inputLineCount = this.calculateInputLineCount();
+
         const termHeight = process.stdout.rows || 24;
         const panelHeight = this.totalPaneHeight;
         const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-        const mainScrollBottom = termHeight - 2;
+        const reservedLines = this.inputLineCount + 1; // +1 for divider
+        const mainScrollBottom = termHeight - reservedLines;
         const scrollHeight = mainScrollBottom - mainScrollTop + 1;
 
         // Clear entire screen and reset
@@ -409,18 +414,33 @@ class MudClient {
     this.redrawInput();
   }
 
+  // Calculate how many terminal lines the input will occupy
+  private calculateInputLineCount(): number {
+    const termWidth = process.stdout.columns || 80;
+    const firstLineWidth = termWidth - this.promptText.length;
+
+    if (this.input.length <= firstLineWidth) {
+      return 1;
+    }
+
+    // First line takes firstLineWidth chars, subsequent lines take full width
+    const remainingChars = this.input.length - firstLineWidth;
+    return 1 + Math.ceil(remainingChars / termWidth);
+  }
+
   private setupScrollRegion(): void {
     const termHeight = process.stdout.rows || 24;
     const panelHeight = this.totalPaneHeight;
     // Layout (panes at top if enabled):
     //   Row 1 to panelHeight: stacked panes (if enabled)
     //   Row panelHeight+1: divider below panes (if enabled)
-    //   Row panelHeight+2 to termHeight-2: main output (scroll region)
-    //   Row termHeight-1: divider above input
-    //   Row termHeight: input line
+    //   Row panelHeight+2 to termHeight-N-1: main output (scroll region)
+    //   Row termHeight-N: divider above input
+    //   Row termHeight-N+1 to termHeight: input lines (N lines)
     // When panes disabled (height=0): scroll region starts at row 1
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
 
     // Set scroll region for main output
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
@@ -502,7 +522,8 @@ class MudClient {
     const termHeight = process.stdout.rows || 24;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
 
     // Ensure scroll region is correct (defensive - prevents drift)
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
@@ -1456,7 +1477,8 @@ class MudClient {
     const termWidth = process.stdout.columns || 80;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
     const scrollHeight = mainScrollBottom - mainScrollTop + 1;
 
     // Check if main is focused (no border when solo'd)
@@ -1502,7 +1524,8 @@ class MudClient {
     } else {
       // Solo a specific pane = expand it to full height
       const termHeight = process.stdout.rows || 24;
-      const fullHeight = termHeight - 2; // Leave room for divider + input
+      const reservedLines = this.inputLineCount + 1; // +1 for divider
+      const fullHeight = termHeight - reservedLines; // Leave room for divider + input
 
       // Expand the focused pane to full height
       const pane = this.paneManager.getPane(focusedPaneId);
@@ -1846,7 +1869,8 @@ class MudClient {
     const termHeight = process.stdout.rows || 24;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
     process.stdout.write(SET_SCROLL_REGION(mainScrollTop, mainScrollBottom));
     process.stdout.write(SAVE_CURSOR);
     process.stdout.write(CURSOR_TO(mainScrollBottom, 1));
@@ -1884,9 +1908,33 @@ class MudClient {
     const termHeight = process.stdout.rows || 24;
     const totalPaneHeight = this.totalPaneHeight;
 
-    // Layout rows (panes at top if enabled)
-    const lowerDividerRow = termHeight - 1;            // Above input
+    // Calculate how many lines we need for the input
+    const newLineCount = this.calculateInputLineCount();
+    const oldLineCount = this.inputLineCount;
 
+    // If line count changed, update scroll region
+    if (newLineCount !== oldLineCount) {
+      // If shrinking, clear the old divider and any extra input lines first
+      if (newLineCount < oldLineCount) {
+        const oldDividerRow = termHeight - oldLineCount;
+        // Clear old divider and lines that will become part of scroll region
+        for (let row = oldDividerRow; row < termHeight - newLineCount; row++) {
+          process.stdout.write(CURSOR_TO(row, 1) + CLEAR_LINE);
+        }
+      }
+
+      this.inputLineCount = newLineCount;
+      // Re-setup scroll region with new reserved space
+      const mainScrollTop = totalPaneHeight > 0 ? totalPaneHeight + 2 : 1;
+      const reservedLines = this.inputLineCount + 1; // +1 for divider
+      process.stdout.write(SET_SCROLL_REGION(mainScrollTop, termHeight - reservedLines));
+    }
+
+    const firstLineWidth = termWidth - this.promptText.length;
+    const dividerRow = termHeight - this.inputLineCount;
+    const inputStartRow = dividerRow + 1;
+
+    // Layout rows (panes at top if enabled)
     if (totalPaneHeight > 0) {
       const upperDividerRow = totalPaneHeight + 1;  // Below panes
 
@@ -1900,14 +1948,18 @@ class MudClient {
     }
 
     // Draw lower divider (between main output and input)
-    process.stdout.write(CURSOR_TO(lowerDividerRow, 1));
+    process.stdout.write(CURSOR_TO(dividerRow, 1));
     process.stdout.write(`\x1b[38;5;238m${"─".repeat(termWidth)}\x1b[0m`);
 
-    // Move to last row and clear it
-    process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE);
+    // Clear all input lines
+    for (let i = 0; i < this.inputLineCount; i++) {
+      process.stdout.write(CURSOR_TO(inputStartRow + i, 1) + CLEAR_LINE);
+    }
 
-    // Write prompt in dark grey + input (with reverse video if selected)
+    // Write the input across multiple lines
+    process.stdout.write(CURSOR_TO(inputStartRow, 1));
     process.stdout.write(`\x1b[38;5;238m${this.promptText}\x1b[0m`);
+
     if (this.inputSelected && this.input) {
       // Reverse video for selected text
       process.stdout.write(`\x1b[7m${this.input}\x1b[27m`);
@@ -1915,17 +1967,35 @@ class MudClient {
       process.stdout.write(this.input);
     }
 
-    // Write right-aligned status in gray (only if statusPosition is 'right')
-    if (this.settings.get("statusPosition") === "right") {
+    // Write right-aligned status in gray (only if single-line and input doesn't overlap)
+    if (this.inputLineCount === 1 && this.settings.get("statusPosition") === "right") {
       const statusText = this.getStatusText();
       const statusCol = termWidth - statusText.length;
-      process.stdout.write(CURSOR_TO_COL(statusCol));
-      process.stdout.write(`\x1b[90m${statusText}\x1b[0m`);
+      const inputEndCol = this.promptText.length + this.input.length + 1; // +1 for 1-based
+      // Only show status if there's at least 1 char gap between input and status
+      if (inputEndCol < statusCol) {
+        process.stdout.write(CURSOR_TO_COL(statusCol));
+        process.stdout.write(`\x1b[90m${statusText}\x1b[0m`);
+      }
     }
 
-    // Move cursor back to correct position in input
-    const cursorCol = this.promptText.length + this.cursorPos + 1;
-    process.stdout.write(CURSOR_TO(termHeight, cursorCol));
+    // Calculate cursor position (row and column)
+    let cursorRow: number;
+    let cursorCol: number;
+
+    if (this.cursorPos <= firstLineWidth) {
+      // Cursor is on first line
+      cursorRow = inputStartRow;
+      cursorCol = this.promptText.length + this.cursorPos + 1;
+    } else {
+      // Cursor is on a subsequent line
+      const posAfterFirstLine = this.cursorPos - firstLineWidth;
+      const additionalLines = Math.floor(posAfterFirstLine / termWidth);
+      cursorRow = inputStartRow + 1 + additionalLines;
+      cursorCol = (posAfterFirstLine % termWidth) + 1;
+    }
+
+    process.stdout.write(CURSOR_TO(cursorRow, cursorCol));
   }
 
   private echo(message: string): void {
@@ -1935,7 +2005,8 @@ class MudClient {
     const termHeight = process.stdout.rows || 24;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
     const prefix = "\x1b[36m[Client]\x1b[0m ";
     const prefixLen = 10; // "[Client] " visible length
     const availableWidth = termWidth - prefixLen;
@@ -2059,7 +2130,8 @@ class MudClient {
     const termHeight = process.stdout.rows || 24;
     const panelHeight = this.totalPaneHeight;
     const mainScrollTop = panelHeight > 0 ? panelHeight + 2 : 1;
-    const mainScrollBottom = termHeight - 2;
+    const reservedLines = this.inputLineCount + 1; // +1 for divider
+    const mainScrollBottom = termHeight - reservedLines;
     const scrollHeight = mainScrollBottom - mainScrollTop + 1;
 
     // Clear entire screen and reset
