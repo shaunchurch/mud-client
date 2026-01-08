@@ -132,6 +132,31 @@ export class Pane {
     this.height = this.originalHeight;
   }
 
+  setOriginalHeight(height: number): void {
+    this.originalHeight = height;
+    this.height = height;
+  }
+
+  getOriginalHeight(): number {
+    return this.originalHeight;
+  }
+
+  setPassthrough(passthrough: boolean): void {
+    (this as { passthrough: boolean }).passthrough = passthrough;
+  }
+
+  setMaxMessages(max: number): void {
+    this.maxMessages = max;
+  }
+
+  getMaxMessages(): number {
+    return this.maxMessages;
+  }
+
+  getPassthrough(): boolean {
+    return this.passthrough;
+  }
+
   scrollUp(lines: number): void {
     const maxScroll = Math.max(0, this.messages.length - this.height);
     this.scrollOffset = Math.min(maxScroll, this.scrollOffset + lines);

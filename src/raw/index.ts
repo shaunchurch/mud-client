@@ -1684,23 +1684,25 @@ class MudClient {
           this.echo(`Valid values: ${validValues.join(", ")}`);
         }
       } else if (command === "pane" || command === "panes") {
-        const subCommand = parts[1];
         const paneId = parts[1];
         const action = parts[2];
 
-        if (!subCommand) {
+        if (!paneId) {
           // List all panes and their status
           const status = this.paneManager.getPaneStatus();
           if (status.length === 0) {
             this.echo("No panes configured. Edit ~/.config/mud-client/panes.yaml");
           } else {
             this.echo("Panes:");
-            for (const pane of status) {
-              const state = pane.enabled ? "enabled" : "disabled";
-              this.echo(`  ${pane.id}: ${state}`);
+            for (const s of status) {
+              const pane = this.paneManager.getPane(s.id);
+              const state = s.enabled ? "enabled" : "disabled";
+              const height = pane?.getOriginalHeight() ?? "?";
+              const passthrough = pane?.getPassthrough() ? "yes" : "no";
+              this.echo(`  ${s.id}: ${state}, height=${height}, passthrough=${passthrough}`);
             }
             this.echo("");
-            this.echo("Usage: /pane <id> enable|disable");
+            this.echo("Usage: /pane <id> enable|disable|set");
           }
         } else if (action === "enable" || action === "enabled") {
           if (this.paneManager.enablePane(paneId)) {
@@ -1718,8 +1720,56 @@ class MudClient {
           } else {
             this.echo(`Unknown pane: ${paneId}`);
           }
+        } else if (action === "set") {
+          const setting = parts[3];
+          const value = parts[4];
+          const pane = this.paneManager.getPane(paneId);
+
+          if (!pane) {
+            this.echo(`Unknown pane: ${paneId}`);
+          } else if (!setting) {
+            // Show current settings
+            this.echo(`Pane '${paneId}' settings:`);
+            this.echo(`  height = ${pane.getOriginalHeight()}`);
+            this.echo(`  passthrough = ${pane.getPassthrough()}`);
+            this.echo(`  maxMessages = ${pane.getMaxMessages()}`);
+            this.echo("");
+            this.echo("Usage: /pane <id> set <setting> <value>");
+          } else if (setting === "height") {
+            const num = parseInt(value, 10);
+            if (isNaN(num) || num < 1 || num > 50) {
+              this.echo("Invalid height. Must be a number between 1 and 50.");
+            } else {
+              pane.setOriginalHeight(num);
+              this.paneConfig.setPaneHeight(paneId, num);
+              this.echo(`Pane '${paneId}' height set to ${num}`);
+              this.refreshScreen();
+            }
+          } else if (setting === "passthrough") {
+            if (value !== "true" && value !== "false") {
+              this.echo("Invalid value. Must be 'true' or 'false'.");
+            } else {
+              const bool = value === "true";
+              pane.setPassthrough(bool);
+              this.paneConfig.setPanePassthrough(paneId, bool);
+              this.echo(`Pane '${paneId}' passthrough set to ${bool}`);
+            }
+          } else if (setting === "maxMessages") {
+            const num = parseInt(value, 10);
+            if (isNaN(num) || num < 10 || num > 10000) {
+              this.echo("Invalid maxMessages. Must be a number between 10 and 10000.");
+            } else {
+              pane.setMaxMessages(num);
+              this.paneConfig.setPaneMaxMessages(paneId, num);
+              this.echo(`Pane '${paneId}' maxMessages set to ${num}`);
+            }
+          } else {
+            this.echo(`Unknown setting: ${setting}`);
+            this.echo("Available settings: height, passthrough, maxMessages");
+          }
         } else {
           this.echo("Usage: /pane <id> enable|disable");
+          this.echo("       /pane <id> set <setting> <value>");
           this.echo("       /panes - list all panes");
         }
       } else {

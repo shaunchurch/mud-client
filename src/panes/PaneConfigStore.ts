@@ -102,6 +102,33 @@ export class PaneConfigStore {
     return true;
   }
 
+  setPaneHeight(id: string, height: number): boolean {
+    const pane = this.config.panes.find((p) => p.id === id);
+    if (!pane) return false;
+
+    pane.height = height;
+    this.save();
+    return true;
+  }
+
+  setPanePassthrough(id: string, passthrough: boolean): boolean {
+    const pane = this.config.panes.find((p) => p.id === id);
+    if (!pane) return false;
+
+    pane.passthrough = passthrough;
+    this.save();
+    return true;
+  }
+
+  setPaneMaxMessages(id: string, maxMessages: number): boolean {
+    const pane = this.config.panes.find((p) => p.id === id);
+    if (!pane) return false;
+
+    pane.maxMessages = maxMessages;
+    this.save();
+    return true;
+  }
+
   private save(): void {
     const content = stringify(this.config);
     writeFileSync(this.configPath, content);
