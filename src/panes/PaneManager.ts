@@ -33,6 +33,10 @@ export class PaneManager {
     return this.panes.map((p) => p.id);
   }
 
+  getEnabledPaneIds(): string[] {
+    return this.getEnabledPanes().map((p) => p.id);
+  }
+
   getPaneStatus(): Array<{ id: string; enabled: boolean }> {
     return this.panes.map((p) => ({ id: p.id, enabled: p.enabled }));
   }

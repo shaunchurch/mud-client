@@ -83,6 +83,11 @@ class MudClient {
   private lastConnection: ConnectionConfig | null = null;
   private lastCharacter: CharacterConfig | null = null;
 
+  // Pane focus mode
+  private inPaneFocus = false;
+  private focusedPaneIndex = 0;
+  private savedPaneStates: Map<string, boolean> = new Map(); // For solo/restore
+
   constructor() {
     this.client = new TelnetClient();
     this.history = new CommandHistory();
@@ -827,6 +832,18 @@ class MudClient {
       return;
     }
 
+    // Handle pane focus mode
+    if (this.inPaneFocus) {
+      this.handlePaneFocusKey(key);
+      return;
+    }
+
+    // Escape - enter pane focus mode (if panes exist)
+    if (key === "\x1b" && this.paneManager.getPaneCount() > 0) {
+      this.enterPaneFocus();
+      return;
+    }
+
     const code = key.charCodeAt(0);
 
     // Ctrl+R - enter reverse search
@@ -1203,6 +1220,116 @@ class MudClient {
     process.stdout.write(CLEAR_LINE + "\r" + line);
   }
 
+  // Pane focus mode - Escape to enter, Tab to cycle, s to solo, Escape/Enter to exit
+  private enterPaneFocus(): void {
+    const enabledPanes = this.paneManager.getEnabledPaneIds();
+    if (enabledPanes.length === 0) return;
+
+    this.inPaneFocus = true;
+    this.focusedPaneIndex = 0;
+    this.redrawPaneFocus();
+  }
+
+  private exitPaneFocus(): void {
+    this.inPaneFocus = false;
+    this.redrawInput();
+  }
+
+  private handlePaneFocusKey(key: string): void {
+    const enabledPanes = this.paneManager.getEnabledPaneIds();
+    if (enabledPanes.length === 0) {
+      this.exitPaneFocus();
+      return;
+    }
+
+    // Escape or Enter - exit focus mode
+    if (key === "\x1b" || key === "\r" || key === "\n") {
+      this.exitPaneFocus();
+      return;
+    }
+
+    // Tab - cycle to next pane
+    if (key === "\t") {
+      this.focusedPaneIndex = (this.focusedPaneIndex + 1) % enabledPanes.length;
+      this.redrawPaneFocus();
+      return;
+    }
+
+    // Shift+Tab (ESC [ Z) - cycle to previous pane
+    if (key === "\x1b[Z") {
+      this.focusedPaneIndex = (this.focusedPaneIndex - 1 + enabledPanes.length) % enabledPanes.length;
+      this.redrawPaneFocus();
+      return;
+    }
+
+    // 's' - solo this pane (disable all others)
+    if (key === "s" || key === "S") {
+      this.soloPaneFocused();
+      return;
+    }
+
+    // 'r' - restore all panes
+    if (key === "r" || key === "R") {
+      this.restorePanes();
+      return;
+    }
+  }
+
+  private soloPaneFocused(): void {
+    const enabledPanes = this.paneManager.getEnabledPaneIds();
+    if (enabledPanes.length === 0) return;
+
+    const focusedPaneId = enabledPanes[this.focusedPaneIndex];
+
+    // Save current states before solo
+    this.savedPaneStates.clear();
+    for (const status of this.paneManager.getPaneStatus()) {
+      this.savedPaneStates.set(status.id, status.enabled);
+    }
+
+    // Disable all panes except focused
+    for (const paneId of this.paneManager.getPaneIds()) {
+      if (paneId !== focusedPaneId) {
+        this.paneManager.disablePane(paneId);
+        this.paneConfig.setPaneEnabled(paneId, false);
+      }
+    }
+
+    this.focusedPaneIndex = 0; // Now only one pane
+    this.refreshScreen();
+    this.redrawPaneFocus();
+  }
+
+  private restorePanes(): void {
+    if (this.savedPaneStates.size === 0) return;
+
+    // Restore saved states
+    for (const [paneId, enabled] of this.savedPaneStates) {
+      if (enabled) {
+        this.paneManager.enablePane(paneId);
+        this.paneConfig.setPaneEnabled(paneId, true);
+      } else {
+        this.paneManager.disablePane(paneId);
+        this.paneConfig.setPaneEnabled(paneId, false);
+      }
+    }
+
+    this.savedPaneStates.clear();
+    this.focusedPaneIndex = 0;
+    this.refreshScreen();
+    this.redrawPaneFocus();
+  }
+
+  private redrawPaneFocus(): void {
+    const enabledPanes = this.paneManager.getEnabledPaneIds();
+    const focusedPane = enabledPanes[this.focusedPaneIndex] || "";
+    const hasSaved = this.savedPaneStates.size > 0;
+    const restoreHint = hasSaved ? ", r=restore" : "";
+    const line = `\x1b[33m[PANE FOCUS]\x1b[0m ${focusedPane} (Tab=next, s=solo${restoreHint}, Esc=exit)`;
+    const termHeight = process.stdout.rows || 24;
+    process.stdout.write(CURSOR_TO(termHeight, 1) + CLEAR_LINE + line);
+  }
+
   private handleCommand(cmd: string): void {
     const trimmed = cmd.trim();
 
@@ -1290,6 +1417,13 @@ class MudClient {
         this.echo("  Up/Down - Navigate history");
         this.echo("  Ctrl+L - Clear screen");
         this.echo("  Ctrl+C - Disconnect (or exit if disconnected)");
+        this.echo("  Escape - Enter pane focus mode");
+        this.echo("");
+        this.echo("Pane focus mode (when panes enabled):");
+        this.echo("  Tab - Cycle to next pane");
+        this.echo("  s - Solo focused pane (hide others)");
+        this.echo("  r - Restore all panes");
+        this.echo("  Escape/Enter - Exit focus mode");
         this.echo("");
         this.echo("Movement (Shift+key, roguelike layout):");
         this.echo("  H/L/K/J - West/East/North/South");
