@@ -39,9 +39,9 @@ class MudClient {
   private paneManager: PaneManager;
   private classifier: MessageClassifier;
 
-  // Total height of all top panes (0 if disabled)
+  // Total height of all enabled panes (0 if none enabled)
   private get totalPaneHeight(): number {
-    return this.settings.get("commPanel") ? this.paneManager.getTotalHeight() : 0;
+    return this.paneManager.getTotalHeight();
   }
 
   private input = "";
@@ -540,12 +540,12 @@ class MudClient {
     // Classify and route lines
     const lines = toFlush.split("\n");
     const mainLines: string[] = [];
-    const panesEnabled = this.settings.get("commPanel");
+    const panesEnabled = this.totalPaneHeight > 0;
 
     for (const line of lines) {
       if (line.length === 0) continue;
 
-      // Route to panes if enabled
+      // Route to panes if any are enabled
       if (panesEnabled) {
         // Strip ANSI codes for classification only
         const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
@@ -1448,13 +1448,12 @@ class MudClient {
 
     const termWidth = process.stdout.columns || 80;
     const termHeight = process.stdout.rows || 24;
-    const panesEnabled = this.settings.get("commPanel");
+    const totalPaneHeight = this.totalPaneHeight;
 
     // Layout rows (panes at top if enabled)
     const lowerDividerRow = termHeight - 1;            // Above input
 
-    if (panesEnabled) {
-      const totalPaneHeight = this.totalPaneHeight;
+    if (totalPaneHeight > 0) {
       const upperDividerRow = totalPaneHeight + 1;  // Below panes
 
       // Layout and render all panes at top

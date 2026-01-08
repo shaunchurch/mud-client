@@ -14,7 +14,6 @@ export interface AppSettings {
   movementKeys: boolean;
   inputMode: InputMode;
   wordWrap: boolean;
-  commPanel: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -25,7 +24,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   movementKeys: true,
   inputMode: "select",
   wordWrap: false,
-  commPanel: true,
 };
 
 const VALID_VALUES: Record<keyof AppSettings, readonly string[]> = {
@@ -36,7 +34,6 @@ const VALID_VALUES: Record<keyof AppSettings, readonly string[]> = {
   movementKeys: ["true", "false"] as const,
   inputMode: ["select", "clear"] as const,
   wordWrap: ["true", "false"] as const,
-  commPanel: ["true", "false"] as const,
 };
 
 const DESCRIPTIONS: Record<keyof AppSettings, string> = {
@@ -47,7 +44,6 @@ const DESCRIPTIONS: Record<keyof AppSettings, string> = {
   movementKeys: "Enable Shift+HJKL roguelike movement shortcuts",
   inputMode: "After sending: select (highlight text) or clear (empty input)",
   wordWrap: "Wrap long lines from the MUD to fit terminal width",
-  commPanel: "Show communications panes (configure in ~/.config/mud-client/panes.yaml)",
 };
 
 export class SettingsManager {
