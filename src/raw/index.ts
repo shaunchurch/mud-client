@@ -584,7 +584,13 @@ class MudClient {
 
     // Restore cursor and redraw input on the last line
     process.stdout.write(RESTORE_CURSOR);
-    this.redrawInput();
+
+    // If in pane focus mode, redraw focus prompt instead of normal input
+    if (this.inPaneFocus) {
+      this.redrawPaneFocus();
+    } else {
+      this.redrawInput();
+    }
   }
 
   private addTimestamps(text: string, mode: "time" | "datetime"): string {
