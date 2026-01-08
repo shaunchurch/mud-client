@@ -960,8 +960,13 @@ class MudClient {
       return;
     }
 
-    // Tab - completion
+    // Tab - enter pane focus if input empty, otherwise completion
     if (key === "\t") {
+      if (this.input === "") {
+        this.enterPaneFocus();
+        return;
+      }
+
       this.inputSelected = false;
 
       // Special case: "/set [key]" - cycle through setting keys
