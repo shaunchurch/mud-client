@@ -1286,13 +1286,23 @@ class MudClient {
     }
 
     if (focusedPaneId === "main") {
-      // Solo main = disable all panes
+      // Solo main = disable all panes (main output gets full screen)
       for (const paneId of this.paneManager.getPaneIds()) {
         this.paneManager.disablePane(paneId);
         this.paneConfig.setPaneEnabled(paneId, false);
       }
     } else {
-      // Solo a specific pane = disable all others
+      // Solo a specific pane = expand it to full height, disable main scroll region
+      const termHeight = process.stdout.rows || 24;
+      const fullHeight = termHeight - 2; // Leave room for divider + input
+
+      // Expand the focused pane to full height
+      const pane = this.paneManager.getPane(focusedPaneId);
+      if (pane) {
+        pane.setHeight(fullHeight);
+      }
+
+      // Disable all other panes
       for (const paneId of this.paneManager.getPaneIds()) {
         if (paneId !== focusedPaneId) {
           this.paneManager.disablePane(paneId);
@@ -1309,8 +1319,12 @@ class MudClient {
   private restorePanes(): void {
     if (this.savedPaneStates.size === 0) return;
 
-    // Restore saved states
+    // Restore saved states and original heights
     for (const [paneId, enabled] of this.savedPaneStates) {
+      const pane = this.paneManager.getPane(paneId);
+      if (pane) {
+        pane.restoreOriginalHeight();
+      }
       if (enabled) {
         this.paneManager.enablePane(paneId);
         this.paneConfig.setPaneEnabled(paneId, true);

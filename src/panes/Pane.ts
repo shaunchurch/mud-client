@@ -24,11 +24,13 @@ export class Pane {
   private messages: PaneMessage[] = [];
   private maxMessages: number;
   private height: number;
+  private originalHeight: number;
   private topRow: number = 0;
 
   constructor(config: PaneConfig) {
     this.id = config.id;
     this.height = config.height;
+    this.originalHeight = config.height;
     this.filter = config.filter;
     this.maxMessages = config.maxMessages || 100;
     this.passthrough = config.passthrough ?? false;
@@ -110,6 +112,14 @@ export class Pane {
 
   getHeight(): number {
     return this.height;
+  }
+
+  setHeight(height: number): void {
+    this.height = height;
+  }
+
+  restoreOriginalHeight(): void {
+    this.height = this.originalHeight;
   }
 
   render(): void {
