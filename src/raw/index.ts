@@ -1431,6 +1431,8 @@ class MudClient {
       pane.setOriginalHeight(newHeight);
       this.paneConfig.setPaneHeight(focusedPaneId, newHeight);
       this.refreshScreen();
+      this.updatePaneFocusIndicators();
+      this.redrawPaneFocus();
     }
   }
 
