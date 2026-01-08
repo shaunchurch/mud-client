@@ -1479,6 +1479,10 @@ class MudClient {
   }
 
   private unsoloPanes(): void {
+    // Remember which pane was focused before restoring
+    const focusablePanes = this.getFocusablePanes();
+    const currentFocusedId = focusablePanes[this.focusedPaneIndex];
+
     // Restore pane states and heights (but stay in focus mode)
     for (const [paneId, enabled] of this.savedPaneStates) {
       const pane = this.paneManager.getPane(paneId);
@@ -1493,7 +1497,12 @@ class MudClient {
     }
 
     this.isSolo = false;
-    this.focusedPaneIndex = 0; // Back to main
+
+    // Keep focus on the same pane after restore
+    const newFocusablePanes = this.getFocusablePanes();
+    this.focusedPaneIndex = newFocusablePanes.indexOf(currentFocusedId);
+    if (this.focusedPaneIndex === -1) this.focusedPaneIndex = 0;
+
     this.refreshScreen();
     this.updatePaneFocusIndicators();
     this.redrawPaneFocus();
