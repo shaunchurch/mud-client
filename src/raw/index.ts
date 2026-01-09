@@ -1140,7 +1140,10 @@ class MudClient {
     // Shift+roguelike movement keys (classic NetHack/Vim layout)
     // H=west, L=east, K=north, J=south
     // Y=nw, U=ne, B=sw, N=se
-    // < >= up/down, . = look
+    // < >= up/down, : = look
+    // Movement only triggers if input is empty OR previous char is a letter (not space).
+    // This allows typing "say Hello" - the H comes after a space so it's text.
+    // But "heal" + H = west, because H after a letter is unusual (mid-word capital).
     if (this.settings.get("movementKeys")) {
       const movementMap: Record<string, string> = {
         H: "w",
@@ -1157,8 +1160,13 @@ class MudClient {
       };
       const movement = movementMap[key];
       if (movement && this.connected) {
-        this.sendAndEcho(movement);
-        return;
+        // Check if previous character is a space - if so, treat as text not movement
+        const prevChar = this.cursorPos > 0 ? this.input[this.cursorPos - 1] : "";
+        const prevIsSpace = prevChar === " ";
+        if (!prevIsSpace) {
+          this.sendAndEcho(movement);
+          return;
+        }
       }
     }
 
