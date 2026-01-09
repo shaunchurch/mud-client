@@ -1738,8 +1738,10 @@ class MudClient {
       } else if (command === "config") {
         this.echo("Settings:");
         const settings = this.settings.getAll();
-        for (const [key, value] of Object.entries(settings)) {
+        // Only show known settings (ignore stale keys in saved config)
+        for (const key of this.settings.getKeys()) {
           const settingKey = key as keyof typeof settings;
+          const value = settings[settingKey];
           const description = this.settings.getDescription(settingKey);
           const validValues = this.settings.getValidValues(settingKey);
           this.echo(`  ${key} = ${value}`);
