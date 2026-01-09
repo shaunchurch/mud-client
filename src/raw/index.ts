@@ -1164,7 +1164,9 @@ class MudClient {
         const prevChar = this.cursorPos > 0 ? this.input[this.cursorPos - 1] : "";
         const prevIsSpace = prevChar === " ";
         if (!prevIsSpace) {
-          this.sendAndEcho(movement);
+          // Send movement without clearing/affecting the input buffer
+          this.echoCommand(movement);
+          this.client.send(movement);
           return;
         }
       }
